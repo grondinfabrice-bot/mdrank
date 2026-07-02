@@ -1,0 +1,4 @@
+config.local.js
+config.js
+*.local.js
+supabase/.temp/
