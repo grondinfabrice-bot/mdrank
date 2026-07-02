@@ -2,6 +2,9 @@ begin;
 
 set local role postgres;
 
+create extension if not exists pgtap;
+
+select plan(40);
 
 create or replace function pg_temp.set_test_user(user_id uuid)
 returns void
@@ -15,30 +18,26 @@ $$;
 grant execute on function pg_temp.set_test_user(uuid) to authenticated;
 
 create or replace function pg_temp.assert_true(condition boolean, message text)
-returns void
+returns text
 language plpgsql
 as $$
 begin
-  if not coalesce(condition, false) then
-    raise exception 'ASSERTION FAILED: %', message;
-  end if;
+  return ok(coalesce(condition, false), message);
 end;
 $$;
 
 grant execute on function pg_temp.assert_true(boolean, text) to authenticated;
 
 create or replace function pg_temp.assert_raises(statement text, message text)
-returns void
+returns text
 language plpgsql
 as $$
 begin
   execute statement;
-  raise exception 'ASSERTION FAILED: expected error for %', message;
+  return fail(message);
 exception
   when others then
-    if sqlerrm like 'ASSERTION FAILED:%' then
-      raise;
-    end if;
+    return pass(message);
 end;
 $$;
 
@@ -172,8 +171,31 @@ select pg_temp.assert_raises(
 select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
 select public.cast_reaction(current_setting('mdrank.punchline_id')::uuid, 'funny');
 select pg_temp.assert_true(
-  (select score = 2 and funny_count = 1 from public.punchlines where id = current_setting('mdrank.punchline_id')::uuid),
-  'funny reaction updates score'
+  (
+    select score = 1 and funny_count = 1
+    from public.punchlines
+    where id = current_setting('mdrank.punchline_id')::uuid
+  ),
+  'funny reaction adds one point'
+);
+select pg_temp.assert_true(
+  (
+    select score_value = 1
+    from public.reactions
+    where user_id = '00000000-0000-0000-0000-000000000102'
+      and punchline_id = current_setting('mdrank.punchline_id')::uuid
+  ),
+  'funny reaction stores official score value'
+);
+
+select public.cast_reaction(current_setting('mdrank.punchline_id')::uuid, 'crazy');
+select pg_temp.assert_true(
+  (
+    select score = 2 and funny_count = 0 and crazy_count = 1
+    from public.punchlines
+    where id = current_setting('mdrank.punchline_id')::uuid
+  ),
+  'changing reaction to crazy updates score'
 );
 
 select public.cast_reaction(current_setting('mdrank.punchline_id')::uuid, 'heavy');
@@ -183,7 +205,37 @@ select pg_temp.assert_true(
     from public.punchlines
     where id = current_setting('mdrank.punchline_id')::uuid
   ),
-  'changing reaction replaces previous reaction'
+  'changing reaction to heavy updates score'
+);
+
+select public.cast_reaction(current_setting('mdrank.punchline_id')::uuid, 'killer');
+select pg_temp.assert_true(
+  (
+    select score = 4 and heavy_count = 0 and killer_count = 1
+    from public.punchlines
+    where id = current_setting('mdrank.punchline_id')::uuid
+  ),
+  'changing reaction to killer updates score'
+);
+
+select public.cast_reaction(current_setting('mdrank.punchline_id')::uuid, 'not_funny');
+select pg_temp.assert_true(
+  (
+    select score = -1 and killer_count = 0 and not_funny_count = 1
+    from public.punchlines
+    where id = current_setting('mdrank.punchline_id')::uuid
+  ),
+  'changing reaction to not funny updates score'
+);
+
+select public.cast_reaction(current_setting('mdrank.punchline_id')::uuid, 'killer');
+select pg_temp.assert_true(
+  (
+    select score = 4 and not_funny_count = 0 and killer_count = 1
+    from public.punchlines
+    where id = current_setting('mdrank.punchline_id')::uuid
+  ),
+  'killer reaction is best normal reaction'
 );
 
 select pg_temp.assert_true(
@@ -208,8 +260,17 @@ select pg_temp.assert_raises(
 select pg_temp.set_test_user('00000000-0000-0000-0000-000000000103');
 select public.give_supernote(current_setting('mdrank.punchline_id')::uuid);
 select pg_temp.assert_true(
-  (select score = 8 and supernote_count = 1 from public.punchlines where id = current_setting('mdrank.punchline_id')::uuid),
-  'supernote adds five points'
+  (select score = 10 and supernote_count = 1 from public.punchlines where id = current_setting('mdrank.punchline_id')::uuid),
+  'supernote adds six points and stacks with normal reaction'
+);
+select pg_temp.assert_true(
+  (
+    select score_value = 6
+    from public.supernotes
+    where user_id = '00000000-0000-0000-0000-000000000103'
+      and punchline_id = current_setting('mdrank.punchline_id')::uuid
+  ),
+  'supernote stores official score value'
 );
 
 select pg_temp.assert_raises(
@@ -370,5 +431,7 @@ select pg_temp.assert_raises(
   $$update public.profiles set role = 'admin' where id = '00000000-0000-0000-0000-000000000102'$$,
   'client cannot make itself admin'
 );
+
+select * from finish();
 
 rollback;

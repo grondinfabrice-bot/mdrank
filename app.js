@@ -221,7 +221,7 @@
   }
 
   function SuperNoteButton(count, selected = false) {
-    return `<button class="reaction-button super-note ${selected ? "is-selected" : ""}" type="button" aria-label="SuperNote">⭐ <strong>${count}</strong></button>`;
+    return `<button class="reaction-button super-note ${selected ? "is-selected" : ""}" type="button" aria-label="SuperNote +6">⭐ <strong>${count}</strong></button>`;
   }
 
   function ReactionBar(reactions, superNotes, selectedReaction = "") {
@@ -229,10 +229,10 @@
 
     return `
       <div class="reaction-bar" aria-label="Reactions">
-        <button class="${reactionClass("laugh")}" type="button">😂 <strong>${reactions.laugh}</strong></button>
-        <button class="${reactionClass("fire")}" type="button">🔥 <strong>${reactions.fire}</strong></button>
-        <button class="${reactionClass("skull")}" type="button">💀 <strong>${reactions.skull}</strong></button>
-        <button class="${reactionClass("mind")}" type="button">🤯 <strong>${reactions.mind}</strong></button>
+        <button class="${reactionClass("laugh")}" type="button" aria-label="Drôle +1">😂 <strong>${reactions.laugh}</strong></button>
+        <button class="${reactionClass("mind")}" type="button" aria-label="Déjanté +2">🤯 <strong>${reactions.mind}</strong></button>
+        <button class="${reactionClass("fire")}" type="button" aria-label="Lourd +3">🔥 <strong>${reactions.fire}</strong></button>
+        <button class="${reactionClass("skull")}" type="button" aria-label="Assassin +4">💀 <strong>${reactions.skull}</strong></button>
         ${SuperNoteButton(superNotes, selectedReaction === "super")}
       </div>
     `;
@@ -257,7 +257,7 @@
           !compact
             ? `
           <div class="card-actions">
-            <button class="ice-button" type="button">Pas ouf ? 🧊</button>
+            <button class="ice-button" type="button" aria-label="Pas ouf -1">Pas ouf ? 🧊</button>
             <button class="report-button" type="button" data-report="${punchline.id}">Signaler</button>
           </div>
         `
