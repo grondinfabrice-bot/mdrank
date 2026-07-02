@@ -397,6 +397,24 @@ button {
   background: #f0edf6;
 }
 
+.follow-button:disabled {
+  cursor: default;
+  opacity: 0.74;
+}
+
+.own-punchline-chip {
+  flex: 0 0 auto;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  color: #746f80;
+  background: #f0edf6;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 820;
+}
+
 .punch-text {
   margin: 17px 0 16px;
   font-size: 1.07rem;
@@ -434,6 +452,12 @@ button {
   transform: translateY(1px) scale(0.98);
 }
 
+.reaction-button:disabled {
+  cursor: default;
+  opacity: 0.68;
+  transform: none;
+}
+
 .reaction-button.is-selected {
   color: var(--primary-dark);
   background: #ebe7ff;
@@ -448,10 +472,23 @@ button {
   box-shadow: 0 6px 14px rgba(255, 200, 61, 0.16);
 }
 
+.super-note span {
+  margin-left: 3px;
+  font-size: 0.74rem;
+  font-weight: 860;
+}
+
 .super-note.is-selected {
   color: #5c4100;
   background: linear-gradient(135deg, #fff6ce, #ffe48d);
   border-color: var(--star);
+}
+
+.super-note.is-muted {
+  color: #8a7a45;
+  background: #f5efd3;
+  border-color: #eadfae;
+  box-shadow: none;
 }
 
 .score-line {
@@ -793,6 +830,24 @@ textarea:focus {
   align-items: flex-start;
 }
 
+.ranking-item.top-1,
+.ranking-item.top-2,
+.ranking-item.top-3 {
+  border-color: rgba(255, 200, 61, 0.5);
+  background: linear-gradient(135deg, #fffdf9 0%, #fff7dc 100%);
+}
+
+.ranking-item.top-1 .rank-position {
+  background: linear-gradient(135deg, var(--star), var(--coral));
+}
+
+.ranking-author {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
 .ranking-item p {
   margin: 6px 0 10px;
   color: var(--muted);
@@ -824,6 +879,23 @@ textarea:focus {
   border: 1px solid #ffe18a;
   border-radius: 999px;
   font-weight: 900;
+}
+
+.tiny-metric,
+.ranking-date {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 9px;
+  color: #6f6980;
+  background: #f4f1f8;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 820;
+}
+
+.ranking-date {
+  margin-top: 9px;
 }
 
 .profile-header {
@@ -1004,8 +1076,50 @@ textarea:focus {
   font-weight: 750;
 }
 
+.report-details-label {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.report-details-label textarea {
+  min-height: 98px;
+}
+
 .admin-card p {
   line-height: 1.45;
+}
+
+.status-chip,
+.admin-report-meta span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 9px;
+  color: #6f6980;
+  background: #f4f1f8;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 820;
+}
+
+.admin-report-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 10px 0;
+}
+
+.admin-detail {
+  padding: 12px;
+  color: var(--muted);
+  background: rgba(240, 237, 246, 0.72);
+  border-radius: 14px;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  font-weight: 720;
 }
 
 .admin-card small {
@@ -1014,14 +1128,20 @@ textarea:focus {
 }
 
 .admin-actions {
-  grid-template-columns: repeat(3, 1fr);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   margin-top: 14px;
 }
 
 .admin-actions button {
   min-height: 40px;
   padding: 0 8px;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
+}
+
+.admin-actions button:disabled {
+  cursor: default;
+  opacity: 0.62;
 }
 
 @media (max-width: 390px) {

@@ -4,7 +4,7 @@ set local role postgres;
 
 create extension if not exists pgtap;
 
-select plan(40);
+select plan(52);
 
 create or replace function pg_temp.set_test_user(user_id uuid)
 returns void
@@ -305,6 +305,10 @@ select pg_temp.assert_raises(
   ),
   'banned user cannot supernote'
 );
+select pg_temp.assert_raises(
+  $$select public.follow_user('00000000-0000-0000-0000-000000000101')$$,
+  'banned user cannot follow'
+);
 
 select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
 select public.follow_user('00000000-0000-0000-0000-000000000101');
@@ -317,6 +321,103 @@ select pg_temp.assert_true(
       and following_id = '00000000-0000-0000-0000-000000000101'
   ),
   'follow is idempotent'
+);
+select pg_temp.assert_true(
+  exists (
+    select 1
+    from public.get_following_feed(20)
+    where id = current_setting('mdrank.punchline_id')::uuid
+  ),
+  'following feed includes followed author punchline'
+);
+select pg_temp.assert_true(
+  (
+    select following_count = 1 and followers_count = 0 and punchline_count = 0
+    from public.get_my_profile_counts()
+  ),
+  'profile follow counters are returned'
+);
+
+set local role postgres;
+insert into public.punchlines (
+  id,
+  author_id,
+  category_id,
+  content,
+  score,
+  supernote_count,
+  created_at
+) values
+  (
+    '00000000-0000-0000-0000-000000000201',
+    '00000000-0000-0000-0000-000000000101',
+    current_setting('mdrank.category_id')::uuid,
+    'Leaderboard tie older low stars',
+    20,
+    1,
+    now() - interval '2 minutes'
+  ),
+  (
+    '00000000-0000-0000-0000-000000000202',
+    '00000000-0000-0000-0000-000000000102',
+    current_setting('mdrank.category_id')::uuid,
+    'Leaderboard tie older high stars',
+    20,
+    3,
+    now() - interval '3 minutes'
+  ),
+  (
+    '00000000-0000-0000-0000-000000000203',
+    '00000000-0000-0000-0000-000000000103',
+    current_setting('mdrank.category_id')::uuid,
+    'Leaderboard tie newer high stars',
+    20,
+    3,
+    now() - interval '1 minute'
+  );
+
+select pg_temp.assert_true(
+  (
+    select array_agg(id order by score desc, supernote_count desc, created_at desc) = array[
+      '00000000-0000-0000-0000-000000000203'::uuid,
+      '00000000-0000-0000-0000-000000000202'::uuid,
+      '00000000-0000-0000-0000-000000000201'::uuid
+    ]
+    from (
+      select id, score, supernote_count, created_at
+      from public.leaderboard_day
+      where id in (
+        '00000000-0000-0000-0000-000000000201',
+        '00000000-0000-0000-0000-000000000202',
+        '00000000-0000-0000-0000-000000000203'
+      )
+    ) ranked
+  ),
+  'leaderboard ties use supernotes then recency'
+);
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name in ('leaderboard_day', 'leaderboard_week', 'leaderboard_month')
+      and column_name in ('email', 'user_id', 'reporter_id', 'reviewed_by', 'report_count', 'status')
+  ),
+  'leaderboard views do not expose internal columns'
+);
+
+update public.punchlines
+set status = 'hidden'
+where id = '00000000-0000-0000-0000-000000000203';
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from public.leaderboard_day
+    where id = '00000000-0000-0000-0000-000000000203'
+  ),
+  'hidden punchline is absent from leaderboard'
 );
 
 select pg_temp.assert_raises(
@@ -335,6 +436,16 @@ select pg_temp.assert_true(
   'unfollow deletes follow'
 );
 
+select pg_temp.set_test_user('00000000-0000-0000-0000-000000000101');
+select pg_temp.assert_raises(
+  format(
+    $$select public.report_punchline(%L::uuid, 'spam', null)$$,
+    current_setting('mdrank.punchline_id')::uuid
+  ),
+  'author cannot report own punchline'
+);
+
+select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
 select public.report_punchline(current_setting('mdrank.punchline_id')::uuid, 'spam', 'test report');
 select pg_temp.assert_true(
   (select report_count = 1 from public.punchlines where id = current_setting('mdrank.punchline_id')::uuid),
@@ -357,7 +468,33 @@ select pg_temp.assert_raises(
   'invalid report reason refused'
 );
 
+select pg_temp.assert_true(
+  (
+    select count(*) = 0
+    from public.get_pending_reports()
+  ),
+  'normal user cannot read global pending reports'
+);
+
 select pg_temp.set_test_user('00000000-0000-0000-0000-000000000104');
+select pg_temp.assert_true(
+  exists (
+    select 1
+    from public.get_pending_reports()
+    where punchline_id = current_setting('mdrank.punchline_id')::uuid
+      and report_reason = 'spam'
+  ),
+  'moderator can read pending reports'
+);
+select public.moderate_punchline(current_setting('mdrank.punchline_id')::uuid, 'dismiss_report', 'test dismiss');
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from public.get_pending_reports()
+    where punchline_id = current_setting('mdrank.punchline_id')::uuid
+  ),
+  'dismiss report removes it from pending reports'
+);
 select public.moderate_punchline(current_setting('mdrank.punchline_id')::uuid, 'hide_punchline', 'test hide');
 select pg_temp.assert_true(
   not exists (select 1 from public.feed_recent where id = current_setting('mdrank.punchline_id')::uuid),
@@ -375,8 +512,16 @@ select pg_temp.assert_true(
 );
 
 select public.moderate_punchline(current_setting('mdrank.punchline_id')::uuid, 'restore_punchline', 'test restore');
+select pg_temp.assert_raises(
+  $$select public.moderate_user('00000000-0000-0000-0000-000000000103', 'ban_user', 'moderator cannot ban')$$,
+  'moderator cannot ban user'
+);
 
 select pg_temp.set_test_user('00000000-0000-0000-0000-000000000105');
+select pg_temp.assert_raises(
+  $$select public.moderate_user('00000000-0000-0000-0000-000000000105', 'ban_user', 'admin cannot self ban')$$,
+  'admin cannot ban self'
+);
 select public.moderate_user('00000000-0000-0000-0000-000000000103', 'ban_user', 'test ban');
 select pg_temp.assert_true(
   (select is_banned from public.profiles where id = '00000000-0000-0000-0000-000000000103'),

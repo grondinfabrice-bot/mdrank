@@ -48,7 +48,7 @@
 
     const { data, error } = await supabase
       .from("profiles")
-      .select("id,pseudo,bio,created_at")
+      .select("id,pseudo,bio,role,is_banned,created_at")
       .eq("id", state.user.id)
       .maybeSingle();
 
