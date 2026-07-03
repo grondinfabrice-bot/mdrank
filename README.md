@@ -1,22 +1,35 @@
 # MDRank
 
-Prototype front-end mobile-first pour une app sociale humoristique de punchlines courtes.
+MDRank est une app sociale humoristique mobile-first pour publier des punchlines courtes sous pseudo, réagir anonymement publiquement, donner une SuperNote rare et voir les meilleurs scores.
 
-## Lancer le prototype
+## MVP
 
-Ouvrir `index.html` dans un navigateur.
+- Auth Supabase
+- Profil public sous pseudo
+- Publication de punchlines courtes
+- Feed récent réel
+- Réactions réelles
+- SuperNote limitée à une fois par jour
+- Follow / unfollow
+- Feed suivis
+- Classements jour / semaine / mois
+- Défi du jour
+- Signalement
+- Admin / modération simple
 
-Option locale :
+Pas de commentaires, pas de messagerie, pas de publicité, pas de monétisation, pas de pay-to-win.
 
-```bash
-python3 -m http.server 4173
-```
+## Stack
 
-Puis ouvrir `http://localhost:4173`.
+- Front statique HTML / CSS / JavaScript
+- Supabase Auth
+- Supabase PostgreSQL
+- RPC PostgreSQL pour les règles métier
+- RLS Supabase
 
-## Configurer Supabase Auth
+## Configuration locale
 
-Renseigner `config.js` avec les valeurs publiques du projet Supabase :
+Copier `config.example.js` vers `config.js`, puis renseigner les valeurs publiques Supabase :
 
 ```js
 window.MDRANK_SUPABASE_CONFIG = {
@@ -25,46 +38,66 @@ window.MDRANK_SUPABASE_CONFIG = {
 };
 ```
 
-La clé `anon` est publique. Ne jamais mettre la `service_role` key dans le front.
+La clé `anon` est publique côté front. Ne jamais mettre la clé `service_role` dans `config.js`, dans le front, dans GitHub ou dans un fichier public.
 
-Dans Supabase Dashboard, vérifier :
+## Lancer en local
 
-- Authentication activé
-- URL du site : `http://localhost:4173`
-- Redirect URLs selon le port utilisé en local
-- la RPC `create_or_update_profile` bien disponible
+```bash
+cd /Users/emotionbeat/ProjetsWeb/mdrank
+python3 -m http.server 4178
+```
 
-## Publication réelle
+Puis ouvrir :
 
-L'écran `Publier` utilise Supabase pour :
+```text
+http://localhost:4178
+```
 
-- charger les catégories actives depuis `categories`
-- publier via la RPC `create_punchline`
-- ne jamais envoyer `author_id`, `score`, `status` ou compteurs depuis le front
+Si le port est occupé, utiliser un autre port :
 
-La publication nécessite :
+```bash
+python3 -m http.server 4179
+```
 
-- utilisateur connecté
-- profil public avec pseudo
-- catégorie active
-- punchline de 3 à 180 caractères
+## Vérifications front
 
-## Contenu
+```bash
+node --check app.js
+node --check mdrankApi.js
+node --check auth.js
+git diff --check
+```
 
-- Ecran accueil / onboarding
-- Feed avec onglets
-- Publication mockée avec aperçu et confirmation
-- Défi du jour
-- Classements
-- Profil personnel mocké
-- Signalement en modale
-- Admin visuel mocké
+Il n'y a pas de `package.json` pour l'instant, donc pas de commande `npm run build` à lancer.
 
-## Phase suivante
+## Supabase
 
-- Brancher une vraie persistance
-- Ajouter une vraie authentification par pseudo
-- Gérer la logique anti-auto-vote
-- Implémenter le calcul de score
-- Ajouter la modération réelle
-- Creer l'avatar cartoon plus tard
+Commandes utiles :
+
+```bash
+supabase migration list
+supabase db push
+supabase test db
+```
+
+Important :
+
+- Ne jamais lancer `supabase db reset` sur la base distante.
+- Utiliser `supabase db push` pour pousser les migrations vers le projet lié.
+- Garder les règles métier côté SQL/RPC.
+- Ne jamais exposer la clé `service_role`.
+- Tester avec au moins deux comptes normaux et un compte admin avant une bêta.
+
+## Données minimales bêta
+
+- Catégories V1 présentes
+- Au moins un défi actif
+- Un compte admin avec `profiles.role = 'admin'`
+- Deux comptes utilisateurs normaux pour tester réactions, SuperNote, follow et signalement
+
+## Tests bêta
+
+Voir :
+
+- `BETA_TEST_PLAN.md`
+- `USER_GUIDE_BETA.md`

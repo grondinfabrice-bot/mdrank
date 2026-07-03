@@ -37,7 +37,23 @@
     const clean = String(pseudo || "").trim();
     if (clean.length < 3) return "Pseudo trop court. Minimum 3 caractères.";
     if (clean.length > 24) return "Pseudo trop long. Maximum 24 caractères.";
+    if (!/^[\p{L}\p{N} ._-]+$/u.test(clean)) return "Utilise seulement lettres, chiffres, espaces, point, tiret ou underscore.";
     return "";
+  }
+
+  function getSignupPseudoCandidate() {
+    return localStorage.getItem(pendingPseudoKey)
+      || state.user?.user_metadata?.mdrank_pseudo
+      || state.user?.user_metadata?.pseudo
+      || "";
+  }
+
+  async function createMissingProfileFromSignup() {
+    if (state.profile) return null;
+    const pseudo = getSignupPseudoCandidate();
+    if (!pseudo) return null;
+    const result = await createOrUpdateProfile(pseudo, null);
+    return result.ok ? state.profile : null;
   }
 
   async function refreshProfile() {
@@ -104,10 +120,7 @@
 
     if (state.user) {
       await refreshProfile();
-      const pending = localStorage.getItem(pendingPseudoKey);
-      if (!state.profile && pending) {
-        await createOrUpdateProfile(pending, null);
-      }
+      await createMissingProfileFromSignup();
     }
 
     state.loading = false;
@@ -117,7 +130,10 @@
       state.user = session?.user || null;
       state.isAuthenticated = Boolean(state.user);
       state.profile = null;
-      if (state.user) await refreshProfile();
+      if (state.user) {
+        await refreshProfile();
+        await createMissingProfileFromSignup();
+      }
       notify();
     });
   }
@@ -131,7 +147,12 @@
 
     const { data, error } = await supabase.auth.signUp({
       email: email.trim(),
-      password
+      password,
+      options: {
+        data: {
+          mdrank_pseudo: pseudo.trim()
+        }
+      }
     });
 
     if (error) {
@@ -177,10 +198,7 @@
     state.isAuthenticated = true;
     await refreshProfile();
 
-    const pending = localStorage.getItem(pendingPseudoKey);
-    if (!state.profile && pending) {
-      await createOrUpdateProfile(pending, null);
-    }
+    await createMissingProfileFromSignup();
 
     notify();
     return { ok: true };

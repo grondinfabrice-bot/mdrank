@@ -6,8 +6,10 @@
     if (lower.includes("authentication")) return "Connecte-toi pour publier.";
     if (lower.includes("profile")) return "Crée ton pseudo avant de publier.";
     if (lower.includes("banned")) return "Publication impossible pour le moment.";
+    if (lower.includes("challenge")) return "Défi indisponible pour le moment.";
     if (lower.includes("category")) return "Choisis une catégorie active.";
-    if (lower.includes("between 3 and 180") || lower.includes("too short")) return "Ta punchline est trop courte.";
+    if (lower.includes("between 3 and 180")) return "Ta punchline doit faire entre 3 et 180 caractères.";
+    if (lower.includes("too short")) return "Ta punchline est trop courte.";
     if (lower.includes("too long")) return "180 caractères max. Ici on frappe vite.";
     if (lower.includes("network") || lower.includes("fetch")) return "Problème réseau. Réessaie dans un instant.";
     return "Publication impossible pour le moment.";
@@ -438,6 +440,73 @@
     };
   }
 
+  async function getProfileBadges(limit = 8) {
+    if (!supabase) {
+      return { ok: false, message: "Impossible de charger les badges pour le moment.", badges: [] };
+    }
+
+    try {
+      const sessionResult = await supabase.auth.getSession();
+      if (sessionResult.error) {
+        return { ok: false, message: "Impossible de charger les badges pour le moment.", badges: [] };
+      }
+
+      const userId = sessionResult.data?.session?.user?.id || null;
+
+      if (!userId) {
+        return { ok: true, badges: [] };
+      }
+
+      const { data, error } = await supabase
+        .from("user_badges")
+        .select(`
+          id,
+          badge_id,
+          earned_at,
+          badges!inner (
+            slug,
+            name,
+            description,
+            category,
+            level,
+            rarity,
+            icon,
+            is_active
+          )
+        `)
+        .eq("user_id", userId)
+        .eq("badges.is_active", true)
+        .order("earned_at", { ascending: false })
+        .limit(limit);
+
+      if (error) {
+        console.warn("MDRank: get profile badges", error);
+        return { ok: false, message: "Impossible de charger les badges pour le moment.", badges: [] };
+      }
+
+      const badges = (data || []).map((row) => {
+        const badge = Array.isArray(row.badges) ? row.badges[0] : row.badges;
+        return {
+          id: row.id,
+          badge_id: row.badge_id,
+          earned_at: row.earned_at,
+          slug: badge?.slug || "",
+          name: badge?.name || "",
+          description: badge?.description || "",
+          category: badge?.category || "",
+          level: badge?.level || 1,
+          rarity: badge?.rarity || "common",
+          icon: badge?.icon || "badge"
+        };
+      });
+
+      return { ok: true, badges };
+    } catch (error) {
+      console.warn("MDRank: get profile badges", error);
+      return { ok: false, message: "Impossible de charger les badges pour le moment.", badges: [] };
+    }
+  }
+
   async function reportPunchline({ punchlineId, reason, details }) {
     if (!supabase) {
       return { ok: false, message: "Supabase n'est pas encore configuré." };
@@ -466,6 +535,21 @@
 
     if (error) {
       console.warn("MDRank: get_pending_reports", error);
+      return { ok: false, message: cleanModerationError(error.message), reports: [] };
+    }
+
+    return { ok: true, reports: data || [] };
+  }
+
+  async function getModeratedPunchlines() {
+    if (!supabase) {
+      return { ok: false, message: "Supabase n'est pas encore configuré.", reports: [] };
+    }
+
+    const { data, error } = await supabase.rpc("get_moderated_punchlines");
+
+    if (error) {
+      console.warn("MDRank: get_moderated_punchlines", error);
       return { ok: false, message: cleanModerationError(error.message), reports: [] };
     }
 
@@ -522,8 +606,10 @@
     followUser,
     unfollowUser,
     getProfileCounts,
+    getProfileBadges,
     reportPunchline,
     getPendingReports,
+    getModeratedPunchlines,
     moderatePunchline,
     moderateUser,
     cleanReactionError,

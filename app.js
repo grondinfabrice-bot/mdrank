@@ -11,12 +11,16 @@
     feedTab: "recent",
     feedItems: [],
     followingItems: [],
+    topItems: [],
     feedLoading: false,
     followingLoading: false,
+    topLoading: false,
     feedLoaded: false,
     followingLoaded: false,
+    topLoaded: false,
     feedError: "",
     followingError: "",
+    topError: "",
     feedActionError: "",
     reactionSubmittingKey: "",
     superNoteSubmittingKey: "",
@@ -24,6 +28,10 @@
     profileCounts: null,
     profileCountsLoading: false,
     profileCountsLoaded: false,
+    profileBadges: [],
+    profileBadgesLoading: false,
+    profileBadgesLoaded: false,
+    profileBadgesError: "",
     rankingTab: "day",
     leaderboardItems: {
       day: [],
@@ -43,7 +51,9 @@
     reportDetails: "",
     reportSubmitting: false,
     reportError: "",
+    adminTab: "pending",
     adminReports: [],
+    adminModerated: [],
     adminLoading: false,
     adminLoaded: false,
     adminError: "",
@@ -85,7 +95,7 @@
 
   state.route = routeFromHash();
 
-  function setRoute(route) {
+  function setRoute(route, options = {}) {
     route = resolveRoute(route);
     state.route = route;
     state.reportPunchline = null;
@@ -93,8 +103,8 @@
     state.reportReason = "personal_attack";
     state.reportDetails = "";
     state.reportError = "";
-    state.authMessage = "";
-    state.authError = "";
+    if (!options.keepAuthMessage) state.authMessage = "";
+    if (!options.keepAuthError) state.authError = "";
     state.feedActionError = "";
     window.location.hash = route === "home" ? "" : route;
     render();
@@ -112,7 +122,7 @@
 
   function resolveRoute(route) {
     const authState = getAuthState();
-    const protectedRoutes = ["publish", "profile"];
+    const protectedRoutes = ["publish", "profile", "profileSetup"];
 
     if (protectedRoutes.includes(route) && authState.loading) {
       return route;
@@ -148,13 +158,7 @@
     }
 
     state.publishCategories = result.categories;
-    if (!state.publishCategoryId && state.publishCategories.length) {
-      const challengeCategory = state.publishChallengeId
-        ? state.publishCategories.find((category) => category.slug === "defi-du-jour")
-        : null;
-      const defaultCategory = challengeCategory || state.publishCategories.find((category) => category.slug === "punchline") || state.publishCategories[0];
-      state.publishCategoryId = defaultCategory.id;
-    }
+    syncPublishCategory();
     render();
   }
 
@@ -229,6 +233,28 @@
     render();
   }
 
+  async function loadFeedTopDay(force = false) {
+    if (!api || state.topLoading || (state.topLoaded && !force)) return;
+
+    state.topLoading = true;
+    state.topError = "";
+
+    const result = await api.getLeaderboard("day", 20);
+
+    state.topLoading = false;
+    state.topLoaded = true;
+
+    if (!result.ok) {
+      state.topItems = [];
+      state.topError = result.message;
+      render();
+      return;
+    }
+
+    state.topItems = result.punchlines;
+    render();
+  }
+
   async function loadProfileCounts(force = false) {
     if (!api || state.profileCountsLoading || (state.profileCountsLoaded && !force)) return;
 
@@ -243,6 +269,53 @@
     state.profileCountsLoaded = true;
     state.profileCounts = result.ok ? result.counts : null;
     render();
+  }
+
+  async function loadProfileBadges(force = false) {
+    if (state.profileBadgesLoading || (state.profileBadgesLoaded && !force)) return;
+
+    const authState = getAuthState();
+    if (!authState.isAuthenticated || !authState.profile) {
+      state.profileBadges = [];
+      state.profileBadgesLoaded = true;
+      state.profileBadgesError = "";
+      return;
+    }
+
+    if (!api?.getProfileBadges) {
+      state.profileBadges = [];
+      state.profileBadgesLoaded = true;
+      state.profileBadgesError = "Impossible de charger les badges pour le moment.";
+      render();
+      return;
+    }
+
+    state.profileBadgesLoading = true;
+    state.profileBadgesError = "";
+
+    try {
+      const result = await Promise.race([
+        api.getProfileBadges(8),
+        new Promise((resolve) => {
+          setTimeout(() => resolve({
+            ok: false,
+            message: "Impossible de charger les badges pour le moment.",
+            badges: []
+          }), 10000);
+        })
+      ]);
+
+      state.profileBadges = result.ok && Array.isArray(result.badges) ? result.badges : [];
+      state.profileBadgesError = result.ok ? "" : "Impossible de charger les badges pour le moment.";
+    } catch (error) {
+      console.warn("MDRank: load profile badges", error);
+      state.profileBadges = [];
+      state.profileBadgesError = "Impossible de charger les badges pour le moment.";
+    } finally {
+      state.profileBadgesLoading = false;
+      state.profileBadgesLoaded = true;
+      render();
+    }
   }
 
   async function loadLeaderboard(force = false) {
@@ -276,37 +349,49 @@
     state.adminLoading = true;
     state.adminError = "";
 
-    const result = await api.getPendingReports();
+    const [pendingResult, moderatedResult] = await Promise.all([
+      api.getPendingReports(),
+      api.getModeratedPunchlines()
+    ]);
 
     state.adminLoading = false;
     state.adminLoaded = true;
 
-    if (!result.ok) {
+    if (!pendingResult.ok || !moderatedResult.ok) {
       state.adminReports = [];
-      state.adminError = result.message;
+      state.adminModerated = [];
+      state.adminError = pendingResult.message || moderatedResult.message;
       render();
       return;
     }
 
-    state.adminReports = result.reports;
+    state.adminReports = pendingResult.reports;
+    state.adminModerated = moderatedResult.reports;
     render();
   }
 
   function getActiveFeedItems() {
     if (state.feedTab === "following") return state.followingItems;
+    if (state.feedTab === "top") return state.topItems;
     return state.feedItems;
   }
 
   function resetUserScopedData() {
     state.feedLoaded = false;
     state.followingLoaded = false;
+    state.topLoaded = false;
     state.feedItems = [];
     state.followingItems = [];
+    state.topItems = [];
     state.profileCountsLoaded = false;
     state.profileCounts = null;
+    state.profileBadgesLoaded = false;
+    state.profileBadges = [];
+    state.profileBadgesError = "";
     state.feedActionError = "";
     state.adminLoaded = false;
     state.adminReports = [];
+    state.adminModerated = [];
     state.adminMessage = "";
     state.adminError = "";
     state.challengeLoaded = false;
@@ -321,6 +406,8 @@
       month: false
     };
     state.leaderboardError = "";
+    state.topLoaded = false;
+    state.topError = "";
   }
 
   function isStaffProfile(profile) {
@@ -331,18 +418,183 @@
     return profile?.role === "admin";
   }
 
+  function badgeIcon(icon, badge = {}) {
+    const slug = badge.slug || "";
+    const name = badge.name || "";
+    const category = badge.category || "";
+
+    if (slug.includes("premier-mdr") || name.includes("Premier MDR")) return "🔥";
+    if (slug.includes("machine-a-vannes")) return "⚡";
+    if (slug.includes("supernote") || category === "supernote") return "◆";
+    if (slug.includes("killer") || category === "reaction") return "◎";
+    if (slug.includes("defi") || category === "challenge") return "✦";
+    if (slug.includes("top-semaine")) return "♛";
+    if (slug.includes("blagueur-du-jour")) return "☻";
+
+    return {
+      spark: "✦",
+      type: "⚡",
+      star: "◆",
+      skull: "◎",
+      target: "✦",
+      trophy: "♛",
+      sun: "☻",
+      badge: "◆"
+    }[icon] || "◆";
+  }
+
+  function badgeVariant(badge, options = {}) {
+    if (options.locked) return "locked";
+    const specialSlugs = ["top-semaine", "defi-du-jour", "blagueur-du-jour"];
+    if (specialSlugs.includes(badge.slug) || ["challenge", "ranking"].includes(badge.category)) return "special";
+    return "default";
+  }
+
+  function badgeLevelLabel(level) {
+    return {
+      1: "I",
+      2: "II",
+      3: "III"
+    }[Number(level)] || "";
+  }
+
+  function badgeCategoryLabel(category) {
+    return {
+      starter: "Début",
+      score: "Score",
+      posting: "Vannes",
+      reaction: "Réaction",
+      supernote: "SuperNote",
+      challenge: "Défi",
+      ranking: "Top",
+      seasonal: "Saison"
+    }[category] || "Badge";
+  }
+
+  function badgeDisplayName(badge) {
+    const level = badgeLevelLabel(badge.level);
+    const name = badge.name || badge.slug || "Badge";
+    if (!level) return name;
+    return name.replace(new RegExp(`\\s+${level}$`, "i"), "");
+  }
+
+  function formatBadgeDate(value) {
+    if (!value) return "";
+    return new Date(value).toLocaleDateString("fr-FR", {
+      day: "2-digit",
+      month: "short"
+    });
+  }
+
+  function BadgePill(badge, options = {}) {
+    const rarity = ["common", "rare", "epic", "legendary"].includes(badge.rarity) ? badge.rarity : "common";
+    const category = badge.category || "starter";
+    const slug = badge.slug || "badge";
+    const level = badgeLevelLabel(badge.level);
+    const variant = badgeVariant(badge, options);
+    const lockedClass = options.locked ? " is-locked" : "";
+    const specialClass = variant === "special" ? " badge-special" : "";
+
+    return `
+      <article class="badge-card badge-${escapeHtml(rarity)} badge-category-${escapeHtml(category)} badge-slug-${escapeHtml(slug)} badge-variant-${escapeHtml(variant)}${specialClass}${lockedClass}">
+        <div class="badge-medallion" aria-hidden="true">
+          <span>${escapeHtml(options.locked ? "🔒" : badgeIcon(badge.icon, badge))}</span>
+        </div>
+        <div class="badge-content">
+          <div class="badge-title-row">
+            <h3>${escapeHtml(badgeDisplayName(badge))}</h3>
+            ${level ? `<span class="badge-level">${escapeHtml(level)}</span>` : ""}
+          </div>
+        </div>
+      </article>
+    `;
+  }
+
+  function renderProfileBadges() {
+    if (state.profileBadgesLoading && !state.profileBadgesLoaded) {
+      return `
+        <div class="badges-empty">
+          <strong>Chargement des badges</strong>
+          <p>On récupère tes derniers badges MDRank.</p>
+        </div>
+      `;
+    }
+
+    if (state.profileBadgesError) {
+      return `
+        <div class="badges-empty">
+          <strong>Badges indisponibles</strong>
+          <p>${escapeHtml(state.profileBadgesError)}</p>
+        </div>
+      `;
+    }
+
+    if (!state.profileBadges.length) {
+      return `
+        <div class="badges-empty">
+          <strong>Aucun badge pour l'instant.</strong>
+          <p>Poste ta première punchline pour commencer.</p>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="badges-grid">
+        ${state.profileBadges.map((badge) => BadgePill(badge)).join("")}
+      </div>
+    `;
+  }
+
   function getSelectedPublishCategory() {
     return state.publishCategories.find((category) => category.id === state.publishCategoryId) || null;
   }
 
+  function getNormalPublishCategories() {
+    return state.publishCategories.filter((category) => category.slug !== "defi-du-jour");
+  }
+
+  function getChallengeCategory() {
+    return state.publishCategories.find((category) => category.slug === "defi-du-jour") || null;
+  }
+
+  function getActivePublishChallenge() {
+    if (!state.publishChallengeId || !state.challenge) return null;
+    return String(state.challenge.id) === String(state.publishChallengeId) ? state.challenge : null;
+  }
+
+  function syncPublishCategory() {
+    if (!state.publishCategories.length) return;
+
+    if (state.publishChallengeId) {
+      const challengeCategory = getChallengeCategory();
+      state.publishCategoryId = challengeCategory?.id || "";
+      return;
+    }
+
+    const normalCategories = getNormalPublishCategories();
+    const selected = normalCategories.find((category) => category.id === state.publishCategoryId);
+    if (!selected) {
+      const defaultCategory = normalCategories.find((category) => category.slug === "punchline") || normalCategories[0] || null;
+      state.publishCategoryId = defaultCategory?.id || "";
+    }
+  }
+
+  function resetPublishChallengeContext() {
+    state.publishChallengeId = "";
+    syncPublishCategory();
+  }
+
   function validatePublish(authState) {
     const content = state.publishText.trim();
+    const activeChallenge = getActivePublishChallenge();
 
     if (!authState.isAuthenticated) return "Connecte-toi pour publier.";
     if (!authState.profile) return "Crée ton pseudo avant de publier.";
     if (!content) return "Ta punchline est trop courte.";
     if (content.length < 3) return "Ta punchline est trop courte.";
     if (content.length > 180) return "180 caractères max. Ici on frappe vite.";
+    if (state.publishChallengeId && !activeChallenge) return "Défi indisponible pour le moment.";
+    if (state.publishChallengeId && !getChallengeCategory()) return "Défi indisponible pour le moment.";
     if (!state.publishCategoryId) return "Choisis une catégorie.";
     return "";
   }
@@ -649,7 +901,7 @@
     return AppShell(`
       <section class="auth-card">
         <h2>Connexion</h2>
-        <p>Connecte-toi pour publier, voter plus tard et gérer ton pseudo MDRank.</p>
+        <p>Connecte-toi pour publier, réagir et gérer ton pseudo MDRank.</p>
         ${renderAuthNotice()}
         <form class="auth-form" id="login-form">
           <label>
@@ -704,11 +956,12 @@
 
   function renderProfileSetup() {
     const authState = getAuthState();
+    const hasProfile = Boolean(authState.profile?.pseudo);
 
     return AppShell(`
       <section class="auth-card">
-        <h2>Choisis ton pseudo</h2>
-        <p>Pas de vrai nom public. Ton pseudo sera visible sur MDRank.</p>
+        <h2>${hasProfile ? "Modifier mon profil" : "Créer mon profil"}</h2>
+        <p>Ton pseudo est public. Ton email reste privé.</p>
         ${renderAuthNotice()}
         ${authState.loading ? `<div class="empty-state"><strong>Chargement</strong><p>On vérifie ta session.</p></div>` : ""}
         <form class="auth-form" id="profile-form">
@@ -720,7 +973,7 @@
             Bio optionnelle
             <textarea id="profile-bio" maxlength="160" placeholder="Une courte bio, sans vrai nom.">${escapeHtml(authState.profile?.bio || "")}</textarea>
           </label>
-          <button class="primary-button full" type="submit">Valider mon pseudo</button>
+          <button class="primary-button full" type="submit">${hasProfile ? "Enregistrer mon profil" : "Créer mon profil"}</button>
         </form>
       </section>
     `, { title: "Pseudo" });
@@ -728,11 +981,16 @@
 
   function renderFeed() {
     const authState = getAuthState();
-    const needsRecentFeed = state.feedTab !== "following";
+    const needsRecentFeed = state.feedTab === "recent";
     const needsFollowingFeed = state.feedTab === "following" && authState.isAuthenticated && authState.profile;
+    const needsTopFeed = state.feedTab === "top";
 
     if (needsRecentFeed && !state.feedLoaded && !state.feedLoading) {
       setTimeout(() => loadFeed(), 0);
+    }
+
+    if (needsTopFeed && !state.topLoaded && !state.topLoading) {
+      setTimeout(() => loadFeedTopDay(), 0);
     }
 
     if (needsFollowingFeed && !state.followingLoaded && !state.followingLoading) {
@@ -746,7 +1004,7 @@
     const filtered = state.feedTab === "following"
       ? state.followingItems
       : state.feedTab === "top"
-        ? [...state.feedItems].sort((a, b) => b.score - a.score || new Date(b.createdAt) - new Date(a.createdAt))
+        ? state.topItems
         : state.feedItems;
 
     let content = "";
@@ -778,6 +1036,16 @@
           <button class="secondary-button full" type="button" data-refresh-following-feed>Réessayer</button>
         </div>
       `;
+    } else if (state.feedTab === "top" && state.topLoading && !state.topLoaded) {
+      content = FeedSkeleton();
+    } else if (state.feedTab === "top" && state.topError) {
+      content = `
+        <div class="empty-state">
+          <strong>Top du jour en pause</strong>
+          <p>${escapeHtml(state.topError)}</p>
+          <button class="secondary-button full" type="button" data-refresh-top-feed>Réessayer</button>
+        </div>
+      `;
     } else if (state.feedLoading && !state.feedLoaded) {
       content = FeedSkeleton();
     } else if (state.feedError) {
@@ -793,6 +1061,8 @@
       content = followsSomeone
         ? EmptyState("Les blagueurs que tu suis sont silencieux pour l'instant.", "C'est louche.")
         : EmptyState("Tu ne suis encore personne.", "Va repérer des blagueurs dans le Feed.");
+    } else if (state.feedTab === "top" && !filtered.length) {
+      content = EmptyState("Aucun top aujourd'hui.", "La scène est encore vide.");
     } else if (!filtered.length) {
       content = EmptyState("Aucune punchline pour l'instant", "Sois le premier à dégainer.");
     } else {
@@ -837,16 +1107,23 @@
       setTimeout(loadPublishCategories, 0);
     }
 
-    const count = state.publishText.length;
+    syncPublishCategory();
+
+    const trimmedText = state.publishText.trim();
+    const count = trimmedText.length;
+    const normalCategories = getNormalPublishCategories();
+    const activeChallenge = getActivePublishChallenge();
+    const isChallengePublish = Boolean(state.publishChallengeId);
+    const effectiveCategory = isChallengePublish ? getChallengeCategory() : getSelectedPublishCategory();
     const canPublish = !state.publishSubmitting
       && !state.publishCategoriesLoading
       && count >= 3
       && count <= 180
-      && Boolean(state.publishCategoryId);
-    const selectedCategory = getSelectedPublishCategory();
+      && Boolean(effectiveCategory?.id)
+      && (!isChallengePublish || Boolean(activeChallenge));
     const preview = {
       pseudo: authState.profile.pseudo,
-      category: selectedCategory?.name || "Catégorie",
+      category: isChallengePublish ? "Défi du jour" : effectiveCategory?.name || "Catégorie",
       text: state.publishText || "Ta punchline apparaîtra ici pendant que tu l'écris.",
       reactions: { laugh: 0, fire: 0, skull: 0, mind: 0, ice: 0 },
       superNotes: 0,
@@ -857,24 +1134,35 @@
 
     return AppShell(`
       <form class="publish-form">
-        <div class="publish-help">Balance court. Frappe fort.</div>
+        <div class="publish-help">Punchline courte. Pseudo public. Email privé.</div>
         ${state.publishError ? `<div class="error-box">${escapeHtml(state.publishError)}</div>` : ""}
         ${state.publishSuccess ? `<div class="success-box">${escapeHtml(state.publishSuccess)}</div>` : ""}
-        <label>
-          Catégorie
-          <select id="publish-category" ${state.publishCategoriesLoading ? "disabled" : ""}>
-            <option value="">${state.publishCategoriesLoading ? "Chargement..." : "Choisis une catégorie"}</option>
-            ${state.publishCategories.map((category) => `
-              <option value="${category.id}" ${category.id === state.publishCategoryId ? "selected" : ""}>${escapeHtml(category.name)}</option>
-            `).join("")}
-          </select>
-        </label>
+        ${
+          isChallengePublish
+            ? `
+              <div class="challenge-context">
+                <strong>Tu réponds au défi du jour.</strong>
+                <span>${activeChallenge ? escapeHtml(activeChallenge.title) : "Défi indisponible pour le moment."}</span>
+              </div>
+            `
+            : `
+              <label>
+                Catégorie
+                <select id="publish-category" ${state.publishCategoriesLoading ? "disabled" : ""}>
+                  <option value="">${state.publishCategoriesLoading ? "Chargement..." : "Choisis une catégorie"}</option>
+                  ${normalCategories.map((category) => `
+                    <option value="${category.id}" ${category.id === state.publishCategoryId ? "selected" : ""}>${escapeHtml(category.name)}</option>
+                  `).join("")}
+                </select>
+              </label>
+            `
+        }
         <label>
           Punchline
           <textarea id="publish-text" maxlength="180" placeholder="Écris court, net, efficace.">${escapeHtml(state.publishText)}</textarea>
         </label>
         <div class="form-row">
-          <span class="${count > 180 ? "danger" : ""}">${count} / 180</span>
+          <span class="char-counter ${count > 180 ? "danger" : count >= 160 ? "warning" : ""}">${count} / 180</span>
           <button class="primary-button" type="button" data-publish ${canPublish ? "" : "disabled"}>
             ${state.publishSubmitting ? "Publication..." : "Publier"}
           </button>
@@ -882,7 +1170,7 @@
       </form>
       <h2 class="section-title">Aperçu</h2>
       ${PunchlineCard(preview, true)}
-      <div class="rules-box"><strong>Règles rapides</strong><span>Pas de vraie personne ciblée. Pas de nom réel. Pas d'attaque identifiable.</span></div>
+      <div class="rules-box"><strong>Règles rapides</strong><span>Roast oui, acharnement non. Ne vise pas une vraie personne identifiable.</span></div>
     `, { title: "Publier une punchline" });
   }
 
@@ -1008,31 +1296,75 @@
       ? new Date(authState.profile.created_at).toLocaleDateString("fr-FR")
       : "";
     const counts = state.profileCounts || { following: "—", followers: "—", punchlines: "—" };
+    const email = authState.user?.email || "Email indisponible pour le moment";
 
     if (!state.profileCountsLoaded && !state.profileCountsLoading) {
       setTimeout(() => loadProfileCounts(), 0);
     }
 
+    if (!state.profileBadgesLoaded && !state.profileBadgesLoading) {
+      setTimeout(() => loadProfileBadges(), 0);
+    }
+
     return AppShell(`
-      <section class="profile-header">
-        <div class="avatar">${escapeHtml(authState.profile.pseudo.slice(0, 2).toUpperCase())}</div>
-        <div>
-          <h2>${escapeHtml(authState.profile.pseudo)}</h2>
-          <p>Pseudo public</p>
+      ${state.authMessage ? `<div class="success-box">${escapeHtml(state.authMessage)}</div>` : ""}
+      <section class="profile-section">
+        <div class="section-heading">
+          <div>
+            <h2>Profil public</h2>
+            <p>Ce que les autres voient sur MDRank.</p>
+          </div>
+          <span>Public</span>
+        </div>
+        <div class="profile-header compact-profile">
+          <div class="avatar">${escapeHtml(authState.profile.pseudo.slice(0, 2).toUpperCase())}</div>
+          <div>
+            <h3>${escapeHtml(authState.profile.pseudo)}</h3>
+            <p>Pseudo public, vraie identité au vestiaire.</p>
+          </div>
+        </div>
+        ${authState.profile.bio ? `<div class="profile-bio">${escapeHtml(authState.profile.bio)}</div>` : `<div class="profile-bio is-empty">Aucune bio pour l'instant.</div>`}
+        <div class="stats-grid">
+          ${StatCard({ icon: "→", value: String(counts.following), label: "suivis" })}
+          ${StatCard({ icon: "←", value: String(counts.followers), label: "abonnés" })}
+          ${StatCard({ icon: "✎", value: String(counts.punchlines), label: "punchlines" })}
+        </div>
+        <div class="profile-badges">
+          <div class="section-heading compact-heading">
+            <div>
+              <h2>Badges</h2>
+              <p>Les derniers badges obtenus sur MDRank.</p>
+            </div>
+          </div>
+          ${renderProfileBadges()}
+        </div>
+        <div class="profile-actions">
+          <button data-route="profileSetup">Modifier mon profil</button>
         </div>
       </section>
-      ${authState.profile.bio ? `<div class="profile-bio">${escapeHtml(authState.profile.bio)}</div>` : ""}
-      <div class="stats-grid">
-        ${StatCard({ icon: "→", value: String(counts.following), label: "suivis" })}
-        ${StatCard({ icon: "←", value: String(counts.followers), label: "abonnés" })}
-        ${StatCard({ icon: "✎", value: String(counts.punchlines), label: "punchlines" })}
-        ${StatCard({ icon: "✦", value: "MVP", label: "rang bientôt" })}
-      </div>
-      ${createdAt ? `<div class="rules-box"><strong>Membre depuis</strong><span>${createdAt}</span></div>` : ""}
-      <div class="profile-actions">
-        <button data-route="profileSetup">Modifier pseudo / bio</button>
-        <button class="logout" data-sign-out>Déconnexion</button>
-      </div>
+      <section class="profile-section private-section">
+        <div class="section-heading">
+          <div>
+            <h2>Compte privé</h2>
+            <p>Visible uniquement par toi.</p>
+          </div>
+          <span>Privé</span>
+        </div>
+        <div class="account-list">
+          <div>
+            <span>Email de connexion</span>
+            <strong>${escapeHtml(email)}</strong>
+          </div>
+          <div>
+            <span>Statut</span>
+            <strong>Connecté</strong>
+          </div>
+          ${createdAt ? `<div><span>Profil créé le</span><strong>${createdAt}</strong></div>` : ""}
+        </div>
+        <div class="profile-actions">
+          <button class="logout" data-sign-out>Déconnexion</button>
+        </div>
+      </section>
     `, { title: "Moi" });
   }
 
@@ -1048,12 +1380,31 @@
     }[reason] || "Autre";
   }
 
+  function reportStatusLabel(status) {
+    return {
+      pending: "Signalement ouvert",
+      reviewed: "Signalement traité",
+      dismissed: "Signalement rejeté",
+      action_taken: "Action appliquée"
+    }[status] || status;
+  }
+
+  function punchlineStatusLabel(status) {
+    return {
+      published: "Visible",
+      hidden: "Masquée",
+      deleted: "Supprimée",
+      pending_review: "En revue"
+    }[status] || status;
+  }
+
   function AdminReportCard(report) {
     const createdAt = report.created_at
       ? new Date(report.created_at).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
       : "";
     const authState = getAuthState();
     const actionBusy = state.adminActionKey === String(report.id);
+    const isHidden = report.punchline_status === "hidden";
 
     return `
       <article class="admin-card" data-admin-report="${report.id}">
@@ -1062,20 +1413,25 @@
             <strong>${escapeHtml(report.author_pseudo || "@MDRank")}</strong>
             ${CategoryBadge(report.category_name || "Punchline")}
           </div>
-          <span class="status-chip">${escapeHtml(report.punchline_status)}</span>
+          <span class="status-chip">${escapeHtml(punchlineStatusLabel(report.punchline_status))}</span>
         </div>
         <p>“${escapeHtml(report.punchline_content || "")}”</p>
         <div class="admin-report-meta">
-          <span>${escapeHtml(reportReasonLabel(report.report_reason))}</span>
+          ${report.report_reason ? `<span>${escapeHtml(reportReasonLabel(report.report_reason))}</span>` : ""}
+          ${report.report_status ? `<span>${escapeHtml(reportStatusLabel(report.report_status))}</span>` : ""}
           <span>${Number(report.report_count || 0)} signalement${Number(report.report_count || 0) > 1 ? "s" : ""}</span>
           ${createdAt ? `<span>${escapeHtml(createdAt)}</span>` : ""}
         </div>
         ${report.report_details ? `<div class="admin-detail">${escapeHtml(report.report_details)}</div>` : ""}
         <div class="admin-actions">
-          <button type="button" data-admin-action="dismiss_report" data-punchline-id="${report.punchline_id}" data-report-id="${report.id}" ${actionBusy ? "disabled" : ""}>Ignorer</button>
-          <button type="button" data-admin-action="hide_punchline" data-punchline-id="${report.punchline_id}" data-report-id="${report.id}" ${actionBusy ? "disabled" : ""}>Masquer</button>
-          <button type="button" data-admin-action="restore_punchline" data-punchline-id="${report.punchline_id}" data-report-id="${report.id}" ${actionBusy ? "disabled" : ""}>Restaurer</button>
-          <button class="danger-button" type="button" data-admin-action="delete_punchline" data-punchline-id="${report.punchline_id}" data-report-id="${report.id}" ${actionBusy ? "disabled" : ""}>Supprimer</button>
+          ${
+            isHidden
+              ? `<button type="button" data-admin-action="restore_punchline" data-punchline-id="${report.punchline_id}" data-report-id="${report.id}" ${actionBusy ? "disabled" : ""}>Restaurer</button>`
+              : `
+                <button type="button" data-admin-action="dismiss_report" data-punchline-id="${report.punchline_id}" data-report-id="${report.id}" ${actionBusy ? "disabled" : ""}>Ignorer</button>
+                <button type="button" data-admin-action="hide_punchline" data-punchline-id="${report.punchline_id}" data-report-id="${report.id}" ${actionBusy ? "disabled" : ""}>Masquer</button>
+              `
+          }
           ${
             isAdminProfile(authState.profile)
               ? `<button class="danger-button" type="button" data-admin-user-action="${report.author_is_banned ? "unban_user" : "ban_user"}" data-target-user-id="${report.author_id}" data-report-id="${report.id}" ${actionBusy ? "disabled" : ""}>${report.author_is_banned ? "Débannir" : "Bannir"}</button>`
@@ -1119,6 +1475,7 @@
       setTimeout(() => loadAdminReports(), 0);
     }
 
+    const adminItems = state.adminTab === "moderated" ? state.adminModerated : state.adminReports;
     let content = "";
     if (state.adminLoading && !state.adminLoaded) {
       content = FeedSkeleton();
@@ -1130,16 +1487,26 @@
           <button class="secondary-button full" type="button" data-refresh-admin>Réessayer</button>
         </div>
       `;
-    } else if (!state.adminReports.length) {
-      content = EmptyState("Aucun signalement pending.", "La modération respire un peu.");
+    } else if (!adminItems.length) {
+      content = state.adminTab === "moderated"
+        ? EmptyState("Aucune punchline masquée.", "Rien à restaurer pour le moment.")
+        : EmptyState("Aucun signalement en attente.", "La modération respire un peu.");
     } else {
-      content = `<div class="card-list">${state.adminReports.map(AdminReportCard).join("")}</div>`;
+      content = `<div class="card-list">${adminItems.map(AdminReportCard).join("")}</div>`;
     }
 
     return AppShell(`
-      <div class="admin-note">Signalements pending. Actions réservées aux rôles moderator/admin.</div>
+      ${Tabs(
+        [
+          { label: `À traiter (${state.adminReports.length})`, value: "pending" },
+          { label: `Masquées (${state.adminModerated.length})`, value: "moderated" }
+        ],
+        state.adminTab,
+        "admin"
+      )}
+      <div class="admin-note">Signalements en attente. Actions réservées à la modération MDRank.</div>
       ${state.adminMessage ? `<div class="success-box">${escapeHtml(state.adminMessage)}</div>` : ""}
-      ${state.adminError && state.adminReports.length ? `<div class="error-box">${escapeHtml(state.adminError)}</div>` : ""}
+      ${state.adminError && adminItems.length ? `<div class="error-box">${escapeHtml(state.adminError)}</div>` : ""}
       ${content}
     `, { title: "Admin MDRank", action: `<button class="icon-text" data-route="feed">Feed</button>` });
   }
@@ -1147,7 +1514,7 @@
   function bindEvents() {
     document.querySelectorAll("[data-route]").forEach((button) => {
       button.addEventListener("click", () => {
-        if (button.dataset.route === "publish") state.publishChallengeId = "";
+        if (button.dataset.route === "publish") resetPublishChallengeContext();
         setRoute(button.dataset.route);
       });
     });
@@ -1159,6 +1526,7 @@
           state.rankingTab = button.dataset.tab;
           state.leaderboardError = "";
         }
+        if (button.dataset.tabTarget === "admin") state.adminTab = button.dataset.tab;
         render();
       });
     });
@@ -1200,6 +1568,9 @@
     const refreshFollowingFeedButton = document.querySelector("[data-refresh-following-feed]");
     if (refreshFollowingFeedButton) refreshFollowingFeedButton.addEventListener("click", () => loadFollowingFeed(true));
 
+    const refreshTopFeedButton = document.querySelector("[data-refresh-top-feed]");
+    if (refreshTopFeedButton) refreshTopFeedButton.addEventListener("click", () => loadFeedTopDay(true));
+
     const refreshRankingButton = document.querySelector("[data-refresh-ranking]");
     if (refreshRankingButton) refreshRankingButton.addEventListener("click", () => loadLeaderboard(true));
 
@@ -1212,10 +1583,7 @@
     document.querySelectorAll("[data-join-challenge]").forEach((button) => {
       button.addEventListener("click", () => {
         state.publishChallengeId = button.dataset.joinChallenge;
-        if (state.publishCategories.length) {
-          const challengeCategory = state.publishCategories.find((category) => category.slug === "defi-du-jour");
-          if (challengeCategory) state.publishCategoryId = challengeCategory.id;
-        }
+        syncPublishCategory();
         setRoute("publish");
       });
     });
@@ -1262,7 +1630,11 @@
         }
 
         state.profileCountsLoaded = false;
-        await loadFeed(true);
+        if (state.feedTab === "top") {
+          await loadFeedTopDay(true);
+        } else {
+          await loadFeed(true);
+        }
         if (state.feedTab === "following" || punchline?.followed) {
           await loadFollowingFeed(true);
         }
@@ -1276,6 +1648,7 @@
         const card = button.closest("[data-punchline-card]");
         const punchlineId = card?.dataset.punchlineCard;
         const reactionType = button.dataset.reaction;
+        const punchline = getActiveFeedItems().find((item) => String(item.id) === String(punchlineId));
         const authState = getAuthState();
 
         if (!authState.isAuthenticated) {
@@ -1289,6 +1662,12 @@
         }
 
         if (!punchlineId || !reactionType) return;
+
+        if (punchline?.authorId === authState.user?.id) {
+          state.feedActionError = "Impossible de réagir à ta propre punchline.";
+          render();
+          return;
+        }
 
         state.reactionSubmittingKey = String(punchlineId);
         state.feedActionError = "";
@@ -1307,12 +1686,14 @@
           return;
         }
 
+        resetLeaderboards();
         if (state.feedTab === "following") {
           await loadFollowingFeed(true);
+        } else if (state.feedTab === "top") {
+          await loadFeedTopDay(true);
         } else {
           await loadFeed(true);
         }
-        resetLeaderboards();
       });
     });
 
@@ -1369,12 +1750,14 @@
           return;
         }
 
+        resetLeaderboards();
         if (state.feedTab === "following") {
           await loadFollowingFeed(true);
+        } else if (state.feedTab === "top") {
+          await loadFeedTopDay(true);
         } else {
           await loadFeed(true);
         }
-        resetLeaderboards();
       });
     });
 
@@ -1452,8 +1835,6 @@
         const punchlineId = button.dataset.punchlineId;
         const reportId = button.dataset.reportId;
 
-        if (action === "delete_punchline" && !window.confirm("Supprimer logiquement cette punchline ?")) return;
-
         state.adminActionKey = String(reportId);
         state.adminError = "";
         state.adminMessage = "";
@@ -1476,11 +1857,11 @@
         state.adminMessage = {
           dismiss_report: "Signalement ignoré.",
           hide_punchline: "Punchline masquée.",
-          restore_punchline: "Punchline restaurée.",
-          delete_punchline: "Punchline supprimée."
+          restore_punchline: "Punchline restaurée."
         }[action] || "Action effectuée.";
         state.feedLoaded = false;
         state.followingLoaded = false;
+        state.topLoaded = false;
         resetLeaderboards();
         await loadAdminReports(true);
       });
@@ -1518,6 +1899,7 @@
         state.adminMessage = action === "ban_user" ? "Utilisateur banni." : "Utilisateur débanni.";
         state.feedLoaded = false;
         state.followingLoaded = false;
+        state.topLoaded = false;
         resetLeaderboards();
         await loadAdminReports(true);
       });
@@ -1563,9 +1945,10 @@
       state.publishSuccess = "";
       render();
 
+      const category = state.publishChallengeId ? getChallengeCategory() : getSelectedPublishCategory();
       const result = await api.createPunchline({
         content: state.publishText.trim(),
-        categoryId: state.publishCategoryId,
+        categoryId: category?.id || state.publishCategoryId,
         challengeId: state.publishChallengeId || null
       });
 
@@ -1578,14 +1961,17 @@
       }
 
       state.publishText = "";
-      state.publishChallengeId = "";
+      resetPublishChallengeContext();
       state.published = true;
       state.publishSuccess = "Punchline publiée. Elle démarre à Score 0.";
       state.feedLoaded = false;
       state.followingLoaded = false;
+      state.topLoaded = false;
       state.feedItems = [];
       state.followingItems = [];
+      state.topItems = [];
       state.profileCountsLoaded = false;
+      state.profileBadgesLoaded = false;
       state.challengeLoaded = false;
       resetLeaderboards();
       render();
@@ -1664,7 +2050,8 @@
         return;
       }
 
-      setRoute("profile");
+      state.authMessage = "Profil enregistré.";
+      setRoute("profile", { keepAuthMessage: true });
     });
 
     const signOutButton = document.querySelector("[data-sign-out]");

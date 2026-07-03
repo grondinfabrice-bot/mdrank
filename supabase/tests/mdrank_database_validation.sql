@@ -4,7 +4,7 @@ set local role postgres;
 
 create extension if not exists pgtap;
 
-select plan(52);
+select plan(74);
 
 create or replace function pg_temp.set_test_user(user_id uuid)
 returns void
@@ -103,6 +103,8 @@ update public.profiles set role = 'admin' where id = '00000000-0000-0000-0000-00
 update public.profiles set is_banned = true where id = '00000000-0000-0000-0000-000000000106';
 
 select set_config('mdrank.category_id', (select id::text from public.categories where slug = 'punchline'), true);
+select set_config('mdrank.challenge_category_id', (select id::text from public.categories where slug = 'defi-du-jour'), true);
+select set_config('mdrank.challenge_id', (select id::text from public.daily_challenges where is_active = true order by challenge_date desc limit 1), true);
 
 select pg_temp.assert_true(
   (select count(*) from public.categories where slug in ('ta-mere', 'punchline', 'absurde', 'roast', 'vie-quotidienne', 'defi-du-jour')) = 6,
@@ -127,6 +129,53 @@ select set_config(
     )
   ),
   true
+);
+
+select pg_temp.assert_true(
+  exists (
+    select 1
+    from public.public_user_badges
+    where user_id = '00000000-0000-0000-0000-000000000101'
+      and slug = 'premier-mdr'
+  ),
+  'first published punchline awards premier MDR badge'
+);
+
+select public.create_punchline('Deuxième punchline de test.',
+  current_setting('mdrank.category_id')::uuid,
+  null
+);
+select public.create_punchline('Troisième punchline de test.',
+  current_setting('mdrank.category_id')::uuid,
+  null
+);
+select public.create_punchline('Quatrième punchline de test.',
+  current_setting('mdrank.category_id')::uuid,
+  null
+);
+select public.create_punchline('Cinquième punchline de test.',
+  current_setting('mdrank.category_id')::uuid,
+  null
+);
+
+select pg_temp.assert_true(
+  exists (
+    select 1
+    from public.public_user_badges
+    where user_id = '00000000-0000-0000-0000-000000000101'
+      and slug = 'machine-a-vannes-1'
+  ),
+  'five published punchlines award machine a vannes I badge'
+);
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from public.public_user_badges
+    where user_id = '00000000-0000-0000-0000-000000000101'
+      and slug = 'machine-a-vannes-2'
+  ),
+  'twenty-five punchline badge is not awarded too early'
 );
 
 select pg_temp.assert_raises(
@@ -217,6 +266,15 @@ select pg_temp.assert_true(
   ),
   'changing reaction to killer updates score'
 );
+select pg_temp.assert_true(
+  exists (
+    select 1
+    from public.public_user_badges
+    where user_id = '00000000-0000-0000-0000-000000000101'
+      and slug = 'killer-1'
+  ),
+  'first killer reaction received awards killer I badge'
+);
 
 select public.cast_reaction(current_setting('mdrank.punchline_id')::uuid, 'not_funny');
 select pg_temp.assert_true(
@@ -272,6 +330,15 @@ select pg_temp.assert_true(
   ),
   'supernote stores official score value'
 );
+select pg_temp.assert_true(
+  exists (
+    select 1
+    from public.public_user_badges
+    where user_id = '00000000-0000-0000-0000-000000000101'
+      and slug = 'supernote-1'
+  ),
+  'first supernote received awards supernote I badge'
+);
 
 select pg_temp.assert_raises(
   format(
@@ -310,7 +377,34 @@ select pg_temp.assert_raises(
   'banned user cannot follow'
 );
 
+set local role authenticated;
+select pg_temp.assert_raises(
+  $$insert into public.follows (follower_id, following_id) values ('00000000-0000-0000-0000-000000000106'::uuid, '00000000-0000-0000-0000-000000000101'::uuid)$$,
+  'RLS blocks banned direct follow insert'
+);
+select pg_temp.assert_raises(
+  format(
+    $$insert into public.reports (punchline_id, reporter_id, reason) values (%L::uuid, '00000000-0000-0000-0000-000000000106'::uuid, 'spam')$$,
+    current_setting('mdrank.punchline_id')::uuid
+  ),
+  'RLS blocks banned direct report insert'
+);
+set local role postgres;
+
 select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
+set local role authenticated;
+insert into public.follows (follower_id, following_id)
+values ('00000000-0000-0000-0000-000000000102'::uuid, '00000000-0000-0000-0000-000000000101'::uuid);
+select pg_temp.assert_true(
+  (
+    select count(*) = 1
+    from public.follows
+    where follower_id = '00000000-0000-0000-0000-000000000102'
+      and following_id = '00000000-0000-0000-0000-000000000101'
+  ),
+  'RLS allows direct follow insert for active profiles'
+);
+set local role postgres;
 select public.follow_user('00000000-0000-0000-0000-000000000101');
 select public.follow_user('00000000-0000-0000-0000-000000000101');
 select pg_temp.assert_true(
@@ -336,6 +430,22 @@ select pg_temp.assert_true(
     from public.get_my_profile_counts()
   ),
   'profile follow counters are returned'
+);
+
+select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
+select public.create_punchline(
+  'Participation au défi du jour en une phrase.',
+  current_setting('mdrank.challenge_category_id')::uuid,
+  current_setting('mdrank.challenge_id')::uuid
+);
+select pg_temp.assert_true(
+  exists (
+    select 1
+    from public.public_user_badges
+    where user_id = '00000000-0000-0000-0000-000000000102'
+      and slug = 'defi-du-jour'
+  ),
+  'daily challenge punchline awards defi du jour badge'
 );
 
 set local role postgres;
@@ -444,6 +554,16 @@ select pg_temp.assert_raises(
   ),
   'author cannot report own punchline'
 );
+
+set local role authenticated;
+select pg_temp.assert_raises(
+  format(
+    $$insert into public.reports (punchline_id, reporter_id, reason) values (%L::uuid, '00000000-0000-0000-0000-000000000101'::uuid, 'spam')$$,
+    current_setting('mdrank.punchline_id')::uuid
+  ),
+  'RLS blocks direct self-report insert'
+);
+set local role postgres;
 
 select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
 select public.report_punchline(current_setting('mdrank.punchline_id')::uuid, 'spam', 'test report');
@@ -562,6 +682,136 @@ select pg_temp.assert_true(
       and column_name in ('email', 'user_id', 'reporter_id', 'reviewed_by')
   ),
   'public feed views do not expose private identity columns'
+);
+
+set local role postgres;
+select pg_temp.assert_true(
+  (
+    select count(*) = 11
+    from public.badges
+    where slug in (
+      'premier-mdr',
+      'machine-a-vannes-1',
+      'machine-a-vannes-2',
+      'machine-a-vannes-3',
+      'supernote-1',
+      'killer-1',
+      'killer-2',
+      'killer-3',
+      'defi-du-jour',
+      'top-semaine',
+      'blagueur-du-jour'
+    )
+  ),
+  'minimal badge seed exists'
+);
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from public.badges
+    where category not in ('starter', 'score', 'posting', 'reaction', 'supernote', 'challenge', 'ranking', 'seasonal')
+      or rarity not in ('common', 'rare', 'epic', 'legendary')
+      or level < 1
+  ),
+  'badge taxonomy is constrained'
+);
+
+insert into public.user_badges (user_id, badge_id, source_type)
+select
+  '00000000-0000-0000-0000-000000000101'::uuid,
+  id,
+  'manual'
+from public.badges
+where slug = 'blagueur-du-jour';
+
+select pg_temp.assert_raises(
+  $$
+    insert into public.user_badges (user_id, badge_id, source_type)
+    select '00000000-0000-0000-0000-000000000101'::uuid, id, 'manual'
+    from public.badges
+    where slug = 'blagueur-du-jour'
+  $$,
+  'user cannot receive the same permanent badge twice'
+);
+
+update public.badges
+set is_active = false
+where slug = 'top-semaine';
+
+select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
+set local role authenticated;
+select pg_temp.assert_true(
+  exists (select 1 from public.public_badges where slug = 'premier-mdr'),
+  'active badges can be read publicly'
+);
+
+select pg_temp.assert_true(
+  not exists (select 1 from public.public_badges where slug = 'top-semaine'),
+  'inactive badges are hidden from public badges'
+);
+
+select pg_temp.assert_true(
+  exists (
+    select 1
+    from public.public_user_badges
+    where user_id = '00000000-0000-0000-0000-000000000101'
+      and slug = 'premier-mdr'
+  ),
+  'public profiles can expose earned active badges'
+);
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from public.my_badges
+    where user_id <> '00000000-0000-0000-0000-000000000102'
+  ),
+  'my_badges only returns the current user badges'
+);
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name in ('public_badges', 'public_user_badges', 'my_badges')
+      and column_name = 'email'
+  ),
+  'badge views do not expose email'
+);
+
+select pg_temp.assert_raises(
+  $$
+    insert into public.user_badges (user_id, badge_id, source_type)
+    select '00000000-0000-0000-0000-000000000102'::uuid, id, 'manual'
+    from public.badges
+    where slug = 'premier-mdr'
+  $$,
+  'client cannot directly award badges'
+);
+
+select pg_temp.assert_raises(
+  $$select public.award_badge_if_missing('00000000-0000-0000-0000-000000000102'::uuid, 'premier-mdr', 'manual', null)$$,
+  'client cannot execute internal badge award function'
+);
+
+select pg_temp.assert_raises(
+  $$select public.check_and_award_badges_for_user('00000000-0000-0000-0000-000000000102'::uuid)$$,
+  'client cannot execute internal badge check function'
+);
+
+update public.badges
+set rarity = 'legendary'
+where slug = 'premier-mdr';
+
+select pg_temp.assert_true(
+  (
+    select rarity = 'common'
+    from public.badges
+    where slug = 'premier-mdr'
+  ),
+  'client cannot directly edit badges'
 );
 
 select pg_temp.assert_raises(
