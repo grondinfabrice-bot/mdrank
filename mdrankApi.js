@@ -170,6 +170,8 @@
       .eq("is_active", true)
       .lte("challenge_date", reunionToday())
       .order("challenge_date", { ascending: false })
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
       .limit(1);
 
     if (error) {

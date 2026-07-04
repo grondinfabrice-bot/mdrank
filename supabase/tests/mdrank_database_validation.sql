@@ -4,7 +4,7 @@ set local role postgres;
 
 create extension if not exists pgtap;
 
-select plan(99);
+select plan(120);
 
 create or replace function pg_temp.set_test_user(user_id uuid)
 returns void
@@ -104,7 +104,35 @@ update public.profiles set is_banned = true where id = '00000000-0000-0000-0000-
 
 select set_config('mdrank.category_id', (select id::text from public.categories where slug = 'punchline'), true);
 select set_config('mdrank.challenge_category_id', (select id::text from public.categories where slug = 'defi-du-jour'), true);
-select set_config('mdrank.challenge_id', (select id::text from public.daily_challenges where is_active = true order by challenge_date desc limit 1), true);
+
+insert into public.daily_challenges (id, title, description, challenge_date, is_active, created_at)
+values
+  (
+    '00000000-0000-0000-0000-000000000501',
+    'Ancien défi actif',
+    'Ancien sujet à ne pas mélanger.',
+    public.reunion_today() - 10,
+    true,
+    now() - interval '10 days'
+  ),
+  (
+    '00000000-0000-0000-0000-000000000502',
+    'Futur défi actif',
+    'Sujet planifié à ne pas afficher avant sa date.',
+    public.reunion_today() + 1,
+    true,
+    now() + interval '1 day'
+  );
+
+select set_config('mdrank.old_challenge_id', '00000000-0000-0000-0000-000000000501', true);
+select set_config('mdrank.challenge_id', public.current_daily_challenge_id()::text, true);
+
+select pg_temp.assert_true(
+  current_setting('mdrank.challenge_id')::uuid is not null
+    and current_setting('mdrank.challenge_id')::uuid is distinct from current_setting('mdrank.old_challenge_id')::uuid
+    and current_setting('mdrank.challenge_id')::uuid is distinct from '00000000-0000-0000-0000-000000000502'::uuid,
+  'current daily challenge ignores older and future active challenges'
+);
 
 select pg_temp.assert_true(
   (select count(*) from public.categories where slug in ('ta-mere', 'punchline', 'absurde', 'roast', 'vie-quotidienne', 'defi-du-jour')) = 6,
@@ -458,10 +486,64 @@ select pg_temp.assert_true(
 );
 
 select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
+select pg_temp.assert_raises(
+  format(
+    $$select public.create_punchline('Défi sans identifiant actif.', %L::uuid, null)$$,
+    current_setting('mdrank.challenge_category_id')::uuid
+  ),
+  'challenge category without challenge id is refused'
+);
+select pg_temp.assert_raises(
+  format(
+    $$select public.create_punchline('Mauvaise catégorie pour défi.', %L::uuid, %L::uuid)$$,
+    current_setting('mdrank.category_id')::uuid,
+    current_setting('mdrank.challenge_id')::uuid
+  ),
+  'challenge id with normal category is refused'
+);
+select pg_temp.assert_raises(
+  format(
+    $$select public.create_punchline('Ancien défi refusé.', %L::uuid, %L::uuid)$$,
+    current_setting('mdrank.challenge_category_id')::uuid,
+    current_setting('mdrank.old_challenge_id')::uuid
+  ),
+  'historical challenge is not accepted as current daily challenge'
+);
+
+set local role postgres;
+update public.daily_challenges set is_active = false;
+select pg_temp.assert_true(
+  public.current_daily_challenge_id() is null,
+  'no active daily challenge returns null current challenge'
+);
+select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
+select pg_temp.assert_raises(
+  format(
+    $$select public.create_punchline('Aucun défi actif refusé.', %L::uuid, %L::uuid)$$,
+    current_setting('mdrank.challenge_category_id')::uuid,
+    current_setting('mdrank.challenge_id')::uuid
+  ),
+  'publishing to challenge is refused when no challenge is active'
+);
+
+set local role postgres;
+update public.daily_challenges set is_active = true;
+select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
+
 select public.create_punchline(
   'Participation au défi du jour en une phrase.',
   current_setting('mdrank.challenge_category_id')::uuid,
   current_setting('mdrank.challenge_id')::uuid
+);
+select pg_temp.assert_true(
+  exists (
+    select 1
+    from public.public_punchlines
+    where author_id = '00000000-0000-0000-0000-000000000102'
+      and challenge_id = current_setting('mdrank.challenge_id')::uuid
+      and content = 'Participation au défi du jour en une phrase.'
+  ),
+  'daily challenge participation is linked to the current user and challenge'
 );
 select pg_temp.assert_true(
   exists (
@@ -471,6 +553,57 @@ select pg_temp.assert_true(
       and slug = 'defi-du-jour'
   ),
   'daily challenge punchline awards defi du jour badge'
+);
+select pg_temp.assert_true(
+  (
+    select count(*) = 1
+    from public.user_badges ub
+    join public.badges b on b.id = ub.badge_id
+    where ub.user_id = '00000000-0000-0000-0000-000000000102'
+      and b.slug = 'defi-du-jour'
+  ),
+  'daily challenge badge is awarded once after first participation'
+);
+
+select public.create_punchline(
+  'Deuxième participation au défi autorisée.',
+  current_setting('mdrank.challenge_category_id')::uuid,
+  current_setting('mdrank.challenge_id')::uuid
+);
+select pg_temp.assert_true(
+  (
+    select count(*) = 2
+    from public.public_punchlines
+    where author_id = '00000000-0000-0000-0000-000000000102'
+      and challenge_id = current_setting('mdrank.challenge_id')::uuid
+  )
+  and (
+    select count(*) = 1
+    from public.user_badges ub
+    join public.badges b on b.id = ub.badge_id
+    where ub.user_id = '00000000-0000-0000-0000-000000000102'
+      and b.slug = 'defi-du-jour'
+  ),
+  'multiple daily challenge participations are allowed without duplicating badge'
+);
+
+insert into public.punchlines (author_id, category_id, challenge_id, content, status, score)
+values (
+  '00000000-0000-0000-0000-000000000102',
+  current_setting('mdrank.challenge_category_id')::uuid,
+  current_setting('mdrank.old_challenge_id')::uuid,
+  'Participation historique isolée.',
+  'published',
+  99
+);
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from public.public_punchlines
+    where challenge_id = current_setting('mdrank.challenge_id')::uuid
+      and content = 'Participation historique isolée.'
+  ),
+  'current challenge participation query does not mix historical challenge rows'
 );
 
 select pg_temp.set_test_user('00000000-0000-0000-0000-000000000101');
@@ -621,6 +754,39 @@ select pg_temp.assert_true(
     from public.check_and_award_badges_for_user('00000000-0000-0000-0000-000000000104'::uuid)
   ),
   'rechecking killer thresholds returns no already owned badges'
+);
+
+update public.punchlines
+set status = 'hidden'
+where id = '00000000-0000-0000-0000-000000000301';
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from public.public_punchlines
+    where id = '00000000-0000-0000-0000-000000000301'
+  ),
+  'hidden killer badge source is absent from public punchlines'
+);
+
+select pg_temp.assert_true(
+  exists (
+    select 1
+    from public.public_user_badges
+    where user_id = '00000000-0000-0000-0000-000000000104'
+      and slug = 'killer-3'
+  ),
+  'badges already earned from hidden content are not revoked'
+);
+
+select pg_temp.set_test_user('00000000-0000-0000-0000-000000000104');
+select pg_temp.assert_true(
+  (
+    select published_count = 0
+      and killer_received_count = 0
+    from public.get_my_badge_progress_counts()
+  ),
+  'badge progress excludes hidden punchlines while earned badges remain'
 );
 
 select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
@@ -944,6 +1110,71 @@ select pg_temp.assert_true(
   'hidden punchline no longer contributes to public profile score'
 );
 
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from public.public_punchlines
+    where id = '00000000-0000-0000-0000-000000000408'
+  )
+  and not exists (
+    select 1
+    from public.feed_recent
+    where id = '00000000-0000-0000-0000-000000000408'
+  )
+  and not exists (
+    select 1
+    from public.leaderboard_day
+    where id = '00000000-0000-0000-0000-000000000408'
+  ),
+  'hidden best punchline is removed from public feed and top punchlines'
+);
+
+select pg_temp.assert_true(
+  (
+    select score_mdr = 48
+    from public.leaderboard_users
+    where author_id = '10000000-0000-0000-0000-000000000001'
+  ),
+  'profile score and top blagueurs stay aligned after hiding best punchline'
+);
+
+select pg_temp.set_test_user('10000000-0000-0000-0000-000000000009');
+select pg_temp.assert_raises(
+  $$select public.cast_reaction('00000000-0000-0000-0000-000000000408'::uuid, 'funny')$$,
+  'cannot react to hidden punchline'
+);
+select pg_temp.assert_raises(
+  $$select public.give_supernote('00000000-0000-0000-0000-000000000408'::uuid)$$,
+  'cannot supernote hidden punchline'
+);
+
+update public.punchlines
+set status = 'hidden'
+where author_id = '00000000-0000-0000-0000-000000000102'
+  and challenge_id = current_setting('mdrank.challenge_id')::uuid
+  and content = 'Participation au défi du jour en une phrase.';
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from public.public_punchlines
+    where author_id = '00000000-0000-0000-0000-000000000102'
+      and challenge_id = current_setting('mdrank.challenge_id')::uuid
+      and content = 'Participation au défi du jour en une phrase.'
+  ),
+  'hidden daily challenge participation is absent from public challenge query'
+);
+
+select pg_temp.assert_true(
+  exists (
+    select 1
+    from public.public_user_badges
+    where user_id = '00000000-0000-0000-0000-000000000102'
+      and slug = 'defi-du-jour'
+  ),
+  'daily challenge badge remains after hiding one participation'
+);
+
 select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
 
 select pg_temp.assert_raises(
@@ -960,6 +1191,31 @@ select pg_temp.assert_true(
       and following_id = '00000000-0000-0000-0000-000000000101'
   ),
   'unfollow deletes follow'
+);
+
+set local role postgres;
+insert into public.reports (punchline_id, reporter_id, reason, details, status)
+values (
+  '00000000-0000-0000-0000-000000000408',
+  '00000000-0000-0000-0000-000000000102',
+  'spam',
+  'existing report before hidden guard',
+  'pending'
+);
+select public.recalculate_report_count('00000000-0000-0000-0000-000000000408');
+select pg_temp.set_test_user('00000000-0000-0000-0000-000000000103');
+select pg_temp.assert_raises(
+  $$select public.report_punchline('00000000-0000-0000-0000-000000000408'::uuid, 'spam', null)$$,
+  'hidden punchline cannot receive new report'
+);
+select pg_temp.assert_true(
+  (
+    select count(*) = 1
+    from public.reports
+    where punchline_id = '00000000-0000-0000-0000-000000000408'
+      and details = 'existing report before hidden guard'
+  ),
+  'existing report on hidden punchline is preserved'
 );
 
 select pg_temp.set_test_user('00000000-0000-0000-0000-000000000101');
