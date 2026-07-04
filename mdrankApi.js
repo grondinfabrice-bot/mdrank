@@ -375,53 +375,26 @@
     }
 
     const { data, error } = await supabase
-      .from("public_punchlines")
-      .select("author_id,author_pseudo,score,supernote_count,created_at")
-      .limit(1000);
+      .from("leaderboard_users")
+      .select("author_id,author_pseudo,punchline_count,score_mdr,supernote_received_count,latest_punchline_at")
+      .order("score_mdr", { ascending: false })
+      .order("supernote_received_count", { ascending: false })
+      .order("punchline_count", { ascending: false })
+      .order("latest_punchline_at", { ascending: false })
+      .limit(limit);
 
     if (error) {
       console.warn("MDRank: load user leaderboard", error);
       return { ok: false, message: "Impossible de charger le Top blagueurs pour le moment.", users: [] };
     }
 
-    const usersById = (data || []).reduce((acc, row) => {
-      const authorId = row.author_id || "";
-      if (!authorId) return acc;
-
-      const current = acc.get(authorId) || {
-        id: authorId,
-        pseudo: row.author_pseudo || "@MDRank",
-        score: 0,
-        punchlines: 0,
-        superNotes: 0,
-        latestPunchlineAt: ""
-      };
-
-      current.score += Number(row.score || 0);
-      current.punchlines += 1;
-      current.superNotes += Number(row.supernote_count || 0);
-      if (!current.latestPunchlineAt || String(row.created_at || "") > current.latestPunchlineAt) {
-        current.latestPunchlineAt = row.created_at || "";
-      }
-
-      acc.set(authorId, current);
-      return acc;
-    }, new Map());
-
-    const users = [...usersById.values()]
-      .sort((a, b) => {
-        return b.score - a.score
-          || b.superNotes - a.superNotes
-          || b.punchlines - a.punchlines
-          || String(b.latestPunchlineAt).localeCompare(String(a.latestPunchlineAt));
-      })
-      .slice(0, limit)
+    const users = (data || [])
       .map((user, index) => ({
-        id: user.id,
-        pseudo: user.pseudo,
-        score: user.score,
-        punchlines: user.punchlines,
-        superNotes: user.superNotes,
+        id: user.author_id,
+        pseudo: user.author_pseudo || "@MDRank",
+        score: Number(user.score_mdr || 0),
+        punchlines: Number(user.punchline_count || 0),
+        superNotes: Number(user.supernote_received_count || 0),
         position: `#${index + 1}`
       }));
 
@@ -527,54 +500,18 @@
     }
 
     const counts = Array.isArray(data) ? data[0] : data;
-    const fallbackStats = await getMyPublishedPunchlineStats(userId);
-    if (!fallbackStats.ok) {
-      return { ok: false, message: fallbackStats.message, counts: null };
-    }
-
-    const stats = fallbackStats.stats;
     return {
       ok: true,
       counts: {
         following: counts?.following_count || 0,
         followers: counts?.followers_count || 0,
-        punchlines: stats.punchlines,
-        scoreMdr: stats.scoreMdr,
-        superNotesReceived: stats.superNotesReceived,
-        bestPunchline: stats.bestPunchline
-      }
-    };
-  }
-
-  async function getMyPublishedPunchlineStats(userId) {
-    const { data, error } = await supabase
-      .from("public_punchlines")
-      .select("id,content,score,supernote_count,created_at")
-      .eq("author_id", userId)
-      .order("score", { ascending: false })
-      .order("created_at", { ascending: false })
-      .limit(1000);
-
-    if (error) {
-      console.warn("MDRank: get published punchline stats", error);
-      return { ok: false, message: "Impossible de charger les statistiques du profil.", stats: null };
-    }
-
-    const rows = Array.isArray(data) ? data : [];
-    const scoreMdr = rows.reduce((total, row) => total + Number(row.score || 0), 0);
-    const superNotesReceived = rows.reduce((total, row) => total + Number(row.supernote_count || 0), 0);
-    const best = rows[0] || null;
-
-    return {
-      ok: true,
-      stats: {
-        punchlines: rows.length,
-        scoreMdr,
-        superNotesReceived,
-        bestPunchline: best ? {
-          id: best.id,
-          content: best.content || "",
-          score: Number(best.score || 0)
+        punchlines: counts?.punchline_count || 0,
+        scoreMdr: Number(counts?.score_mdr || 0),
+        superNotesReceived: Number(counts?.supernote_received_count || 0),
+        bestPunchline: counts?.best_punchline_id ? {
+          id: counts.best_punchline_id,
+          content: counts.best_punchline_content || "",
+          score: Number(counts.best_punchline_score || 0)
         } : null
       }
     };

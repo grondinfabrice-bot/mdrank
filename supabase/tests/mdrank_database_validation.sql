@@ -4,7 +4,7 @@ set local role postgres;
 
 create extension if not exists pgtap;
 
-select plan(91);
+select plan(99);
 
 create or replace function pg_temp.set_test_user(user_id uuid)
 returns void
@@ -735,6 +735,216 @@ select pg_temp.assert_true(
   ),
   'profile score and user leaderboard use the same published score source'
 );
+
+insert into public.punchlines (id, author_id, category_id, content, status)
+values (
+  '00000000-0000-0000-0000-000000000401',
+  '10000000-0000-0000-0000-000000000001',
+  current_setting('mdrank.category_id')::uuid,
+  'Score MDR scenario A sans reaction.',
+  'published'
+);
+
+select pg_temp.set_test_user('10000000-0000-0000-0000-000000000001');
+select pg_temp.assert_true(
+  (
+    select p.score = 0
+      and stats.score_mdr = 0
+    from public.punchlines p
+    cross join public.get_my_profile_counts() stats
+    where p.id = '00000000-0000-0000-0000-000000000401'
+  ),
+  'score scenario A stays zero for punchline and profile'
+);
+
+insert into public.punchlines (id, author_id, category_id, content, status)
+values (
+  '00000000-0000-0000-0000-000000000402',
+  '10000000-0000-0000-0000-000000000002',
+  current_setting('mdrank.category_id')::uuid,
+  'Score MDR scenario B avec funny.',
+  'published'
+);
+
+insert into public.reactions (punchline_id, user_id, reaction_type, score_value)
+values (
+  '00000000-0000-0000-0000-000000000402',
+  '10000000-0000-0000-0000-000000000003',
+  'funny',
+  1
+);
+
+select pg_temp.set_test_user('10000000-0000-0000-0000-000000000002');
+select pg_temp.assert_true(
+  (
+    select p.score = 1
+      and stats.score_mdr = 1
+    from public.punchlines p
+    cross join public.get_my_profile_counts() stats
+    where p.id = '00000000-0000-0000-0000-000000000402'
+  ),
+  'score scenario B counts one funny as one point everywhere'
+);
+
+insert into public.punchlines (id, author_id, category_id, content, status)
+values (
+  '00000000-0000-0000-0000-000000000403',
+  '10000000-0000-0000-0000-000000000002',
+  current_setting('mdrank.category_id')::uuid,
+  'Score MDR scenario C vaut treize.',
+  'published'
+);
+
+insert into public.reactions (punchline_id, user_id, reaction_type, score_value)
+values
+  ('00000000-0000-0000-0000-000000000403', '10000000-0000-0000-0000-000000000003', 'funny', 1),
+  ('00000000-0000-0000-0000-000000000403', '10000000-0000-0000-0000-000000000004', 'funny', 1),
+  ('00000000-0000-0000-0000-000000000403', '10000000-0000-0000-0000-000000000005', 'crazy', 2),
+  ('00000000-0000-0000-0000-000000000403', '10000000-0000-0000-0000-000000000006', 'killer', 4),
+  ('00000000-0000-0000-0000-000000000403', '10000000-0000-0000-0000-000000000007', 'not_funny', -1);
+
+insert into public.supernotes (punchline_id, user_id, score_value)
+values (
+  '00000000-0000-0000-0000-000000000403',
+  '10000000-0000-0000-0000-000000000008',
+  6
+);
+
+select pg_temp.assert_true(
+  (
+    select p.score = 13
+      and p.funny_count = 2
+      and p.crazy_count = 1
+      and p.killer_count = 1
+      and p.supernote_count = 1
+      and p.not_funny_count = 1
+      and public.calculate_mdr_score(2, 1, 0, 1, 1, 1) = 13
+      and stats.score_mdr = 14
+    from public.punchlines p
+    cross join public.get_my_profile_counts() stats
+    where p.id = '00000000-0000-0000-0000-000000000403'
+  ),
+  'score scenario C gives thirteen and profile total uses same score source'
+);
+
+insert into public.punchlines (id, author_id, category_id, content, status, score, supernote_count, created_at)
+values
+  (
+    '00000000-0000-0000-0000-000000000404',
+    '10000000-0000-0000-0000-000000000001',
+    current_setting('mdrank.category_id')::uuid,
+    'Score MDR scenario D punchline A.',
+    'published',
+    20,
+    1,
+    now() - interval '1 minute'
+  ),
+  (
+    '00000000-0000-0000-0000-000000000405',
+    '10000000-0000-0000-0000-000000000001',
+    current_setting('mdrank.category_id')::uuid,
+    'Score MDR scenario D punchline B.',
+    'published',
+    8,
+    0,
+    now() - interval '2 minutes'
+  );
+
+select pg_temp.set_test_user('10000000-0000-0000-0000-000000000001');
+select pg_temp.assert_true(
+  (
+    select stats.score_mdr = 28
+      and stats.best_punchline_id = '00000000-0000-0000-0000-000000000404'
+      and lu.score_mdr = 28
+    from public.get_my_profile_counts() stats
+    join public.leaderboard_users lu on lu.author_id = '10000000-0000-0000-0000-000000000001'
+  ),
+  'score scenario D aligns profile total, top blagueurs and best punchline'
+);
+
+select pg_temp.assert_true(
+  (
+    select array_agg(id order by score desc, supernote_count desc, created_at desc) = array[
+      '00000000-0000-0000-0000-000000000404'::uuid,
+      '00000000-0000-0000-0000-000000000405'::uuid
+    ]
+    from public.leaderboard_day
+    where id in (
+      '00000000-0000-0000-0000-000000000404',
+      '00000000-0000-0000-0000-000000000405'
+    )
+  ),
+  'score scenario D top punchlines ranks A before B'
+);
+
+insert into public.punchlines (id, author_id, category_id, content, status)
+values (
+  '00000000-0000-0000-0000-000000000406',
+  '10000000-0000-0000-0000-000000000002',
+  current_setting('mdrank.category_id')::uuid,
+  'Score MDR scenario E negatif.',
+  'published'
+);
+
+insert into public.reactions (punchline_id, user_id, reaction_type, score_value)
+values
+  ('00000000-0000-0000-0000-000000000406', '10000000-0000-0000-0000-000000000003', 'not_funny', -1),
+  ('00000000-0000-0000-0000-000000000406', '10000000-0000-0000-0000-000000000004', 'not_funny', -1);
+
+select pg_temp.assert_true(
+  (
+    select score = -2
+    from public.punchlines
+    where id = '00000000-0000-0000-0000-000000000406'
+  ),
+  'score scenario E keeps negative score'
+);
+
+insert into public.punchlines (id, author_id, category_id, content, status, score, supernote_count, created_at)
+values
+  (
+    '00000000-0000-0000-0000-000000000407',
+    '10000000-0000-0000-0000-000000000001',
+    current_setting('mdrank.category_id')::uuid,
+    'Score MDR tie avec moins de SuperNotes.',
+    'published',
+    20,
+    0,
+    now()
+  ),
+  (
+    '00000000-0000-0000-0000-000000000408',
+    '10000000-0000-0000-0000-000000000001',
+    current_setting('mdrank.category_id')::uuid,
+    'Score MDR tie avec plus de SuperNotes.',
+    'published',
+    20,
+    2,
+    now() - interval '1 minute'
+  );
+
+select pg_temp.assert_true(
+  (
+    select best_punchline_id = '00000000-0000-0000-0000-000000000408'
+    from public.get_my_profile_counts()
+  ),
+  'best punchline tie uses supernotes before recency like top punchlines'
+);
+
+update public.punchlines
+set status = 'hidden'
+where id = '00000000-0000-0000-0000-000000000408';
+
+select pg_temp.assert_true(
+  (
+    select score_mdr = 48
+      and best_punchline_id = '00000000-0000-0000-0000-000000000404'
+    from public.get_my_profile_counts()
+  ),
+  'hidden punchline no longer contributes to public profile score'
+);
+
+select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
 
 select pg_temp.assert_raises(
   $$select public.follow_user('00000000-0000-0000-0000-000000000102')$$,
