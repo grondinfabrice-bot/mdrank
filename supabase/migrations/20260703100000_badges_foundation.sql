@@ -65,18 +65,18 @@ create index user_badges_user_earned_at_idx on public.user_badges (user_id, earn
 create index user_badges_badge_id_idx on public.user_badges (badge_id);
 create index user_badges_source_idx on public.user_badges (source_type, source_id);
 
-insert into public.badges (slug, name, description, category, level, rarity, icon) values
-  ('premier-mdr', 'Premier MDR', 'A obtenu son premier badge MDRank.', 'starter', 1, 'common', 'spark'),
-  ('machine-a-vannes-1', 'Machine à vannes I', 'A publié ses premières punchlines.', 'posting', 1, 'common', 'type'),
-  ('machine-a-vannes-2', 'Machine à vannes II', 'Continue à publier régulièrement.', 'posting', 2, 'rare', 'type'),
-  ('machine-a-vannes-3', 'Machine à vannes III', 'Devient une vraie machine à punchlines.', 'posting', 3, 'epic', 'type'),
-  ('supernote-1', 'SuperNote I', 'A reçu une première SuperNote.', 'supernote', 1, 'rare', 'star'),
-  ('killer-1', 'Killer I', 'A reçu ses premiers votes Killer.', 'reaction', 1, 'rare', 'skull'),
-  ('killer-2', 'Killer II', 'Accumule les votes Killer.', 'reaction', 2, 'epic', 'skull'),
-  ('killer-3', 'Killer III', 'Fait très mal dans les réactions Killer.', 'reaction', 3, 'legendary', 'skull'),
-  ('defi-du-jour', 'Défi du jour', 'A participé au Défi du jour.', 'challenge', 1, 'common', 'target'),
-  ('top-semaine', 'Top semaine', 'A marqué le classement de la semaine.', 'ranking', 1, 'epic', 'trophy'),
-  ('blagueur-du-jour', 'Blagueur du jour', 'A brillé sur une journée MDRank.', 'ranking', 1, 'rare', 'sun')
+insert into public.badges (slug, name, description, category, level, rarity, icon, is_active) values
+  ('premier-mdr', 'Premier MDR', 'Ta première punchline est entrée dans l’arène.', 'starter', 1, 'common', 'spark', true),
+  ('machine-a-vannes-1', 'Machine à vannes I', '5 punchlines publiées. Le moteur commence à chauffer.', 'posting', 1, 'common', 'type', true),
+  ('machine-a-vannes-2', 'Machine à vannes II', '25 punchlines publiées. Là, ça vanne sérieusement.', 'posting', 2, 'rare', 'type', true),
+  ('machine-a-vannes-3', 'Machine à vannes III', '100 punchlines publiées. La machine ne prend plus de pause.', 'posting', 3, 'epic', 'type', true),
+  ('supernote-1', 'SuperNote I', 'Une punchline a reçu une SuperNote.', 'supernote', 1, 'rare', 'star', true),
+  ('killer-1', 'Killer I', 'Une punchline a reçu une réaction Killer.', 'reaction', 1, 'common', 'skull', true),
+  ('killer-2', 'Killer II', '10 réactions Killer reçues.', 'reaction', 2, 'rare', 'skull', true),
+  ('killer-3', 'Killer III', '50 réactions Killer reçues.', 'reaction', 3, 'epic', 'skull', true),
+  ('defi-du-jour', 'Défi du jour', 'Participation au Défi du jour.', 'challenge', 1, 'rare', 'target', true),
+  ('top-semaine', 'Top semaine', 'Trophée futur pour le meilleur score de la semaine.', 'ranking', 1, 'legendary', 'trophy', false),
+  ('blagueur-du-jour', 'Blagueur du jour', 'Trophée futur pour le blagueur mis à l’honneur.', 'ranking', 1, 'legendary', 'sun', false)
 on conflict (slug) do update set
   name = excluded.name,
   description = excluded.description,
@@ -84,7 +84,7 @@ on conflict (slug) do update set
   level = excluded.level,
   rarity = excluded.rarity,
   icon = excluded.icon,
-  is_active = true,
+  is_active = excluded.is_active,
   updated_at = now();
 
 create or replace view public.public_badges as

@@ -4,7 +4,7 @@ set local role postgres;
 
 create extension if not exists pgtap;
 
-select plan(74);
+select plan(91);
 
 create or replace function pg_temp.set_test_user(user_id uuid)
 returns void
@@ -118,18 +118,36 @@ select pg_temp.assert_true(
 
 select pg_temp.set_test_user('00000000-0000-0000-0000-000000000101');
 
+create temporary table last_create_result as
+select public.create_punchline(
+  'Une punchline de test assez courte.',
+  current_setting('mdrank.category_id')::uuid,
+  null
+) as result;
+
 select set_config(
   'mdrank.punchline_id',
-  (
-    select id::text
-    from public.create_punchline(
-      'Une punchline de test assez courte.',
-      current_setting('mdrank.category_id')::uuid,
-      null
-    )
-  ),
+  (select result #>> '{punchline,id}' from last_create_result),
   true
 );
+
+select pg_temp.assert_true(
+  (
+    select result->'unlocked_badges' @> '[{"slug":"premier-mdr"}]'::jsonb
+    from last_create_result
+  ),
+  'create punchline returns newly unlocked badges'
+);
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from public.check_and_award_badges_for_user('00000000-0000-0000-0000-000000000101'::uuid)
+  ),
+  'badge check only returns newly inserted badges'
+);
+
+drop table last_create_result;
 
 select pg_temp.assert_true(
   exists (
@@ -426,10 +444,17 @@ select pg_temp.assert_true(
 );
 select pg_temp.assert_true(
   (
-    select following_count = 1 and followers_count = 0 and punchline_count = 0
+    select following_count = 1
+      and followers_count = 0
+      and punchline_count = 0
+      and score_mdr = 0
+      and supernote_received_count = 0
+      and best_punchline_id is null
+      and best_punchline_content is null
+      and best_punchline_score is null
     from public.get_my_profile_counts()
   ),
-  'profile follow counters are returned'
+  'empty profile V1 stats are returned cleanly'
 );
 
 select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
@@ -447,6 +472,158 @@ select pg_temp.assert_true(
   ),
   'daily challenge punchline awards defi du jour badge'
 );
+
+select pg_temp.set_test_user('00000000-0000-0000-0000-000000000101');
+select pg_temp.assert_true(
+  (
+    select score_mdr = 10
+      and punchline_count = 5
+      and supernote_received_count = 1
+      and best_punchline_id = current_setting('mdrank.punchline_id')::uuid
+      and best_punchline_content = 'Une punchline de test assez courte.'
+      and best_punchline_score = 10
+    from public.get_my_profile_counts()
+  ),
+  'profile V1 stats include score, punchlines, supernotes and best punchline'
+);
+
+select pg_temp.assert_true(
+  (
+    select published_count = 5
+      and killer_received_count = 1
+      and supernote_received_count = 1
+      and challenge_punchline_count = 0
+    from public.get_my_badge_progress_counts()
+  ),
+  'badge progress counters are returned for current user'
+);
+select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
+
+set local role postgres;
+
+insert into public.punchlines (author_id, category_id, content, status)
+select
+  '00000000-0000-0000-0000-000000000105'::uuid,
+  current_setting('mdrank.category_id')::uuid,
+  'Seuil publication test ' || gs,
+  'published'
+from generate_series(1, 25) gs;
+
+create temporary table posting_25_badges as
+select *
+from public.check_and_award_badges_for_user('00000000-0000-0000-0000-000000000105'::uuid);
+
+select pg_temp.assert_true(
+  (
+    select array_agg(slug order by slug) = array['machine-a-vannes-1', 'machine-a-vannes-2', 'premier-mdr']
+    from posting_25_badges
+  ),
+  'twenty-five published punchlines return only newly unlocked posting badges'
+);
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from public.check_and_award_badges_for_user('00000000-0000-0000-0000-000000000105'::uuid)
+  ),
+  'rechecking posting thresholds returns no already owned badges'
+);
+
+insert into public.punchlines (author_id, category_id, content, status)
+select
+  '00000000-0000-0000-0000-000000000105'::uuid,
+  current_setting('mdrank.category_id')::uuid,
+  'Seuil cent publications test ' || gs,
+  'published'
+from generate_series(26, 100) gs;
+
+create temporary table posting_100_badges as
+select *
+from public.check_and_award_badges_for_user('00000000-0000-0000-0000-000000000105'::uuid);
+
+select pg_temp.assert_true(
+  (
+    select array_agg(slug order by slug) = array['machine-a-vannes-3']
+    from posting_100_badges
+  ),
+  'one hundred published punchlines return machine a vannes III as newly unlocked'
+);
+
+select pg_temp.assert_true(
+  (
+    select count(*) = count(distinct badge_id)
+    from public.user_badges
+    where user_id = '00000000-0000-0000-0000-000000000105'
+  ),
+  'posting threshold checks keep one row per earned badge'
+);
+
+insert into auth.users (
+  id,
+  aud,
+  role,
+  email,
+  encrypted_password,
+  email_confirmed_at,
+  created_at,
+  updated_at
+)
+select
+  ('10000000-0000-0000-0000-' || lpad(gs::text, 12, '0'))::uuid,
+  'authenticated',
+  'authenticated',
+  'killer-voter-' || gs || '@mdrank.test',
+  crypt('password', gen_salt('bf')),
+  now(),
+  now(),
+  now()
+from generate_series(1, 50) gs;
+
+insert into public.profiles (id, pseudo, pseudo_normalized)
+select
+  ('10000000-0000-0000-0000-' || lpad(gs::text, 12, '0'))::uuid,
+  'KVoter' || gs,
+  'kvoter' || gs
+from generate_series(1, 50) gs;
+
+insert into public.punchlines (id, author_id, category_id, content, status)
+values (
+  '00000000-0000-0000-0000-000000000301',
+  '00000000-0000-0000-0000-000000000104',
+  current_setting('mdrank.category_id')::uuid,
+  'Punchline pour seuils killer.',
+  'published'
+);
+
+insert into public.reactions (punchline_id, user_id, reaction_type, score_value)
+select
+  '00000000-0000-0000-0000-000000000301'::uuid,
+  ('10000000-0000-0000-0000-' || lpad(gs::text, 12, '0'))::uuid,
+  'killer',
+  4
+from generate_series(1, 50) gs;
+
+create temporary table killer_50_badges as
+select *
+from public.check_and_award_badges_for_user('00000000-0000-0000-0000-000000000104'::uuid);
+
+select pg_temp.assert_true(
+  (
+    select array_agg(slug order by slug) = array['killer-1', 'killer-2', 'killer-3', 'premier-mdr']
+    from killer_50_badges
+  ),
+  'fifty killer reactions can return multiple newly unlocked badges cleanly'
+);
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from public.check_and_award_badges_for_user('00000000-0000-0000-0000-000000000104'::uuid)
+  ),
+  'rechecking killer thresholds returns no already owned badges'
+);
+
+select pg_temp.set_test_user('00000000-0000-0000-0000-000000000102');
 
 set local role postgres;
 insert into public.punchlines (
@@ -507,11 +684,22 @@ select pg_temp.assert_true(
 );
 
 select pg_temp.assert_true(
+  (
+    select score_mdr = 30
+      and punchline_count = 6
+      and supernote_received_count = 2
+    from public.leaderboard_users
+    where author_id = '00000000-0000-0000-0000-000000000101'
+  ),
+  'user leaderboard sums published punchline scores and supernotes'
+);
+
+select pg_temp.assert_true(
   not exists (
     select 1
     from information_schema.columns
     where table_schema = 'public'
-      and table_name in ('leaderboard_day', 'leaderboard_week', 'leaderboard_month')
+      and table_name in ('leaderboard_day', 'leaderboard_week', 'leaderboard_month', 'leaderboard_users')
       and column_name in ('email', 'user_id', 'reporter_id', 'reviewed_by', 'report_count', 'status')
   ),
   'leaderboard views do not expose internal columns'
@@ -528,6 +716,24 @@ select pg_temp.assert_true(
     where id = '00000000-0000-0000-0000-000000000203'
   ),
   'hidden punchline is absent from leaderboard'
+);
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from public.leaderboard_users
+    where author_id = '00000000-0000-0000-0000-000000000103'
+  ),
+  'hidden punchlines are absent from user leaderboard totals'
+);
+
+select pg_temp.assert_true(
+  (
+    select score_mdr = 30
+    from public.leaderboard_users
+    where author_id = '00000000-0000-0000-0000-000000000101'
+  ),
+  'profile score and user leaderboard use the same published score source'
 );
 
 select pg_temp.assert_raises(
@@ -717,6 +923,49 @@ select pg_temp.assert_true(
   'badge taxonomy is constrained'
 );
 
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from (
+      values
+        ('premier-mdr', 'Premier MDR', 'Ta première punchline est entrée dans l’arène.', 'starter', 1, 'common', true),
+        ('machine-a-vannes-1', 'Machine à vannes I', '5 punchlines publiées. Le moteur commence à chauffer.', 'posting', 1, 'common', true),
+        ('machine-a-vannes-2', 'Machine à vannes II', '25 punchlines publiées. Là, ça vanne sérieusement.', 'posting', 2, 'rare', true),
+        ('machine-a-vannes-3', 'Machine à vannes III', '100 punchlines publiées. La machine ne prend plus de pause.', 'posting', 3, 'epic', true),
+        ('supernote-1', 'SuperNote I', 'Une punchline a reçu une SuperNote.', 'supernote', 1, 'rare', true),
+        ('killer-1', 'Killer I', 'Une punchline a reçu une réaction Killer.', 'reaction', 1, 'common', true),
+        ('killer-2', 'Killer II', '10 réactions Killer reçues.', 'reaction', 2, 'rare', true),
+        ('killer-3', 'Killer III', '50 réactions Killer reçues.', 'reaction', 3, 'epic', true),
+        ('defi-du-jour', 'Défi du jour', 'Participation au Défi du jour.', 'challenge', 1, 'rare', true),
+        ('top-semaine', 'Top semaine', 'Trophée futur pour le meilleur score de la semaine.', 'ranking', 1, 'legendary', false),
+        ('blagueur-du-jour', 'Blagueur du jour', 'Trophée futur pour le blagueur mis à l’honneur.', 'ranking', 1, 'legendary', false)
+    ) as expected(slug, name, description, category, level, rarity, is_active)
+    left join public.badges b on b.slug = expected.slug
+    where b.slug is null
+      or b.name is distinct from expected.name
+      or b.description is distinct from expected.description
+      or b.category is distinct from expected.category
+      or b.level is distinct from expected.level
+      or b.rarity is distinct from expected.rarity
+      or b.is_active is distinct from expected.is_active
+  ),
+  'official V1 badge pack metadata is stable'
+);
+
+select pg_temp.assert_true(
+  (select count(*) = 9 from public.badges where is_active = true),
+  'official V1 exposes 9 active badges'
+);
+
+select pg_temp.assert_true(
+  (
+    select array_agg(slug order by slug) = array['blagueur-du-jour', 'top-semaine']
+    from public.badges
+    where is_active = false
+  ),
+  'future trophy badges are prepared but inactive'
+);
+
 insert into public.user_badges (user_id, badge_id, source_type)
 select
   '00000000-0000-0000-0000-000000000101'::uuid,
@@ -749,6 +998,11 @@ select pg_temp.assert_true(
 select pg_temp.assert_true(
   not exists (select 1 from public.public_badges where slug = 'top-semaine'),
   'inactive badges are hidden from public badges'
+);
+
+select pg_temp.assert_true(
+  not exists (select 1 from public.public_badges where slug = 'blagueur-du-jour'),
+  'inactive future trophy badges are hidden from public badges'
 );
 
 select pg_temp.assert_true(

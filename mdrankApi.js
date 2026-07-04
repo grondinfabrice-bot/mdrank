@@ -99,6 +99,23 @@
     }[reactionType] || "";
   }
 
+  function normalizeUnlockedBadges(data) {
+    const badges = data?.unlocked_badges || data?.unlockedBadges || [];
+    if (!Array.isArray(badges)) return [];
+
+    return badges.map((badge) => ({
+      awardedUserId: badge.awarded_user_id || badge.awardedUserId || "",
+      slug: badge.slug || "",
+      name: badge.name || "",
+      description: badge.description || "",
+      category: badge.category || "",
+      level: Number(badge.level || 1),
+      rarity: badge.rarity || "common",
+      icon: badge.icon || "badge",
+      earnedAt: badge.earned_at || badge.earnedAt || ""
+    })).filter((badge) => badge.slug && badge.name);
+  }
+
   async function loadActiveCategories() {
     if (!supabase) {
       return { ok: false, message: "Supabase n'est pas encore configuré.", categories: [] };
@@ -135,7 +152,11 @@
       return { ok: false, message: cleanPublishError(error.message) };
     }
 
-    return { ok: true, punchline: data };
+    return {
+      ok: true,
+      punchline: data?.punchline || data,
+      unlockedBadges: normalizeUnlockedBadges(data)
+    };
   }
 
   async function getDailyChallenge() {
@@ -348,6 +369,68 @@
     };
   }
 
+  async function getLeaderboardUsers(limit = 20) {
+    if (!supabase) {
+      return { ok: false, message: "Supabase n'est pas encore configuré.", users: [] };
+    }
+
+    const { data, error } = await supabase
+      .from("public_punchlines")
+      .select("author_id,author_pseudo,score,supernote_count,created_at")
+      .limit(1000);
+
+    if (error) {
+      console.warn("MDRank: load user leaderboard", error);
+      return { ok: false, message: "Impossible de charger le Top blagueurs pour le moment.", users: [] };
+    }
+
+    const usersById = (data || []).reduce((acc, row) => {
+      const authorId = row.author_id || "";
+      if (!authorId) return acc;
+
+      const current = acc.get(authorId) || {
+        id: authorId,
+        pseudo: row.author_pseudo || "@MDRank",
+        score: 0,
+        punchlines: 0,
+        superNotes: 0,
+        latestPunchlineAt: ""
+      };
+
+      current.score += Number(row.score || 0);
+      current.punchlines += 1;
+      current.superNotes += Number(row.supernote_count || 0);
+      if (!current.latestPunchlineAt || String(row.created_at || "") > current.latestPunchlineAt) {
+        current.latestPunchlineAt = row.created_at || "";
+      }
+
+      acc.set(authorId, current);
+      return acc;
+    }, new Map());
+
+    const users = [...usersById.values()]
+      .sort((a, b) => {
+        return b.score - a.score
+          || b.superNotes - a.superNotes
+          || b.punchlines - a.punchlines
+          || String(b.latestPunchlineAt).localeCompare(String(a.latestPunchlineAt));
+      })
+      .slice(0, limit)
+      .map((user, index) => ({
+        id: user.id,
+        pseudo: user.pseudo,
+        score: user.score,
+        punchlines: user.punchlines,
+        superNotes: user.superNotes,
+        position: `#${index + 1}`
+      }));
+
+    return {
+      ok: true,
+      users
+    };
+  }
+
   async function castReaction({ punchlineId, reactionType }) {
     if (!supabase) {
       return { ok: false, message: "Supabase n'est pas encore configuré." };
@@ -363,7 +446,11 @@
       return { ok: false, message: cleanReactionError(error.message) };
     }
 
-    return { ok: true, reaction: data };
+    return {
+      ok: true,
+      reaction: data?.reaction || data,
+      unlockedBadges: normalizeUnlockedBadges(data)
+    };
   }
 
   async function giveSuperNote({ punchlineId }) {
@@ -380,7 +467,11 @@
       return { ok: false, message: cleanSuperNoteError(error.message) };
     }
 
-    return { ok: true, supernote: data };
+    return {
+      ok: true,
+      supernote: data?.supernote || data,
+      unlockedBadges: normalizeUnlockedBadges(data)
+    };
   }
 
   async function followUser({ targetUserId }) {
@@ -422,6 +513,12 @@
       return { ok: false, message: "Supabase n'est pas encore configuré.", counts: null };
     }
 
+    const sessionResult = await supabase.auth.getSession();
+    const userId = sessionResult.data?.session?.user?.id || null;
+    if (!userId) {
+      return { ok: true, counts: null };
+    }
+
     const { data, error } = await supabase.rpc("get_my_profile_counts");
 
     if (error) {
@@ -430,17 +527,89 @@
     }
 
     const counts = Array.isArray(data) ? data[0] : data;
+    const fallbackStats = await getMyPublishedPunchlineStats(userId);
+    if (!fallbackStats.ok) {
+      return { ok: false, message: fallbackStats.message, counts: null };
+    }
+
+    const stats = fallbackStats.stats;
     return {
       ok: true,
       counts: {
         following: counts?.following_count || 0,
         followers: counts?.followers_count || 0,
-        punchlines: counts?.punchline_count || 0
+        punchlines: stats.punchlines,
+        scoreMdr: stats.scoreMdr,
+        superNotesReceived: stats.superNotesReceived,
+        bestPunchline: stats.bestPunchline
       }
     };
   }
 
-  async function getProfileBadges(limit = 8) {
+  async function getMyPublishedPunchlineStats(userId) {
+    const { data, error } = await supabase
+      .from("public_punchlines")
+      .select("id,content,score,supernote_count,created_at")
+      .eq("author_id", userId)
+      .order("score", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(1000);
+
+    if (error) {
+      console.warn("MDRank: get published punchline stats", error);
+      return { ok: false, message: "Impossible de charger les statistiques du profil.", stats: null };
+    }
+
+    const rows = Array.isArray(data) ? data : [];
+    const scoreMdr = rows.reduce((total, row) => total + Number(row.score || 0), 0);
+    const superNotesReceived = rows.reduce((total, row) => total + Number(row.supernote_count || 0), 0);
+    const best = rows[0] || null;
+
+    return {
+      ok: true,
+      stats: {
+        punchlines: rows.length,
+        scoreMdr,
+        superNotesReceived,
+        bestPunchline: best ? {
+          id: best.id,
+          content: best.content || "",
+          score: Number(best.score || 0)
+        } : null
+      }
+    };
+  }
+
+  async function getBadgeProgressCounts() {
+    if (!supabase) {
+      return { ok: false, message: "Impossible de charger la progression des badges.", counts: null };
+    }
+
+    const { data, error } = await supabase.rpc("get_my_badge_progress_counts");
+
+    if (error) {
+      console.warn("MDRank: get_my_badge_progress_counts", error);
+      return {
+        ok: false,
+        message: `Impossible de charger la progression des badges. ${error.message || ""}`.trim(),
+        counts: null,
+        error
+      };
+    }
+
+    const counts = Array.isArray(data) ? data[0] : data;
+    return {
+      ok: true,
+      counts: {
+        published: Number(counts?.published_count || 0),
+        killerReceived: Number(counts?.killer_received_count || 0),
+        supernoteReceived: Number(counts?.supernote_received_count || 0),
+        challengePunchlines: Number(counts?.challenge_punchline_count || 0)
+      }
+    };
+  }
+
+  async function getProfileBadges(limit = 12) {
     if (!supabase) {
       return { ok: false, message: "Impossible de charger les badges pour le moment.", badges: [] };
     }
@@ -504,6 +673,45 @@
     } catch (error) {
       console.warn("MDRank: get profile badges", error);
       return { ok: false, message: "Impossible de charger les badges pour le moment.", badges: [] };
+    }
+  }
+
+  async function getActiveBadges(limit = 12) {
+    if (!supabase) {
+      return { ok: false, message: "Impossible de charger les badges à débloquer.", badges: [] };
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from("badges")
+        .select("id, slug, name, description, category, level, rarity, icon, is_active")
+        .eq("is_active", true)
+        .order("category", { ascending: true })
+        .order("level", { ascending: true })
+        .limit(limit);
+
+      if (error) {
+        console.warn("MDRank: get active badges", error);
+        return { ok: false, message: "Impossible de charger les badges à débloquer.", badges: [] };
+      }
+
+      return {
+        ok: true,
+        badges: (data || []).map((badge) => ({
+          id: badge.id,
+          slug: badge.slug || "",
+          name: badge.name || "",
+          description: badge.description || "",
+          category: badge.category || "",
+          level: badge.level || 1,
+          rarity: badge.rarity || "common",
+          icon: badge.icon || "badge",
+          is_active: Boolean(badge.is_active)
+        }))
+      };
+    } catch (error) {
+      console.warn("MDRank: get active badges", error);
+      return { ok: false, message: "Impossible de charger les badges à débloquer.", badges: [] };
     }
   }
 
@@ -601,12 +809,15 @@
     getRecentPunchlines,
     getFollowingPunchlines,
     getLeaderboard,
+    getLeaderboardUsers,
     castReaction,
     giveSuperNote,
     followUser,
     unfollowUser,
     getProfileCounts,
+    getBadgeProgressCounts,
     getProfileBadges,
+    getActiveBadges,
     reportPunchline,
     getPendingReports,
     getModeratedPunchlines,

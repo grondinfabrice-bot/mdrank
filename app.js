@@ -32,6 +32,15 @@
     profileBadgesLoading: false,
     profileBadgesLoaded: false,
     profileBadgesError: "",
+    activeBadges: [],
+    activeBadgesLoading: false,
+    activeBadgesLoaded: false,
+    activeBadgesError: "",
+    badgeProgressCounts: null,
+    badgeProgressLoading: false,
+    badgeProgressLoaded: false,
+    badgeProgressError: "",
+    badgeUnlockToast: null,
     rankingTab: "day",
     leaderboardItems: {
       day: [],
@@ -45,6 +54,10 @@
       month: false
     },
     leaderboardError: "",
+    userLeaderboardItems: [],
+    userLeaderboardLoading: false,
+    userLeaderboardLoaded: false,
+    userLeaderboardError: "",
     reportPunchline: null,
     reportSent: false,
     reportReason: "personal_attack",
@@ -79,6 +92,8 @@
   };
 
   const app = document.querySelector("#app");
+  let badgeUnlockToastTimer = null;
+  const badgeUnlockToastSeen = new Map();
 
   const routes = {
     home: renderHome,
@@ -87,6 +102,7 @@
     challenges: renderChallenges,
     rankings: renderRankings,
     profile: renderProfile,
+    badges: renderBadgesCollection,
     login: renderLogin,
     signup: renderSignup,
     profileSetup: renderProfileSetup,
@@ -103,6 +119,11 @@
     state.reportReason = "personal_attack";
     state.reportDetails = "";
     state.reportError = "";
+    state.badgeUnlockToast = null;
+    if (badgeUnlockToastTimer) {
+      clearTimeout(badgeUnlockToastTimer);
+      badgeUnlockToastTimer = null;
+    }
     if (!options.keepAuthMessage) state.authMessage = "";
     if (!options.keepAuthError) state.authError = "";
     state.feedActionError = "";
@@ -122,7 +143,7 @@
 
   function resolveRoute(route) {
     const authState = getAuthState();
-    const protectedRoutes = ["publish", "profile", "profileSetup"];
+    const protectedRoutes = ["publish", "profile", "profileSetup", "badges"];
 
     if (protectedRoutes.includes(route) && authState.loading) {
       return route;
@@ -295,7 +316,7 @@
 
     try {
       const result = await Promise.race([
-        api.getProfileBadges(8),
+        api.getProfileBadges(12),
         new Promise((resolve) => {
           setTimeout(() => resolve({
             ok: false,
@@ -314,6 +335,101 @@
     } finally {
       state.profileBadgesLoading = false;
       state.profileBadgesLoaded = true;
+      render();
+    }
+  }
+
+  async function loadActiveBadges(force = false) {
+    if (state.activeBadgesLoading || (state.activeBadgesLoaded && !force)) return;
+
+    const authState = getAuthState();
+    if (!authState.isAuthenticated || !authState.profile) {
+      state.activeBadges = [];
+      state.activeBadgesLoaded = true;
+      state.activeBadgesError = "";
+      return;
+    }
+
+    if (!api?.getActiveBadges) {
+      state.activeBadges = [];
+      state.activeBadgesLoaded = true;
+      state.activeBadgesError = "Impossible de charger les badges à débloquer.";
+      render();
+      return;
+    }
+
+    state.activeBadgesLoading = true;
+    state.activeBadgesError = "";
+
+    try {
+      const result = await Promise.race([
+        api.getActiveBadges(),
+        new Promise((resolve) => {
+          setTimeout(() => resolve({
+            ok: false,
+            message: "Impossible de charger les badges à débloquer.",
+            badges: []
+          }), 10000);
+        })
+      ]);
+
+      state.activeBadges = result.ok && Array.isArray(result.badges) ? result.badges : [];
+      state.activeBadgesError = result.ok ? "" : "Impossible de charger les badges à débloquer.";
+    } catch (error) {
+      console.warn("MDRank: load active badges", error);
+      state.activeBadges = [];
+      state.activeBadgesError = "Impossible de charger les badges à débloquer.";
+    } finally {
+      state.activeBadgesLoading = false;
+      state.activeBadgesLoaded = true;
+      render();
+    }
+  }
+
+  async function loadBadgeProgressCounts(force = false) {
+    if (state.badgeProgressLoading || (state.badgeProgressLoaded && !force)) return;
+
+    const authState = getAuthState();
+    if (!authState.isAuthenticated || !authState.profile) {
+      state.badgeProgressCounts = null;
+      state.badgeProgressLoaded = true;
+      state.badgeProgressError = "";
+      return;
+    }
+
+    if (!api?.getBadgeProgressCounts) {
+      state.badgeProgressCounts = null;
+      state.badgeProgressLoaded = true;
+      state.badgeProgressError = "Impossible de charger la progression des badges.";
+      render();
+      return;
+    }
+
+    state.badgeProgressLoading = true;
+    state.badgeProgressError = "";
+
+    try {
+      const result = await Promise.race([
+        api.getBadgeProgressCounts(),
+        new Promise((resolve) => {
+          setTimeout(() => resolve({
+            ok: false,
+            message: "Impossible de charger la progression des badges.",
+            counts: null
+          }), 10000);
+        })
+      ]);
+
+      state.badgeProgressCounts = result.ok ? result.counts : null;
+      state.badgeProgressError = result.ok ? "" : result.message || "Impossible de charger la progression des badges.";
+      if (!result.ok) console.warn("MDRank: badge progress unavailable", result);
+    } catch (error) {
+      console.warn("MDRank: load badge progress", error);
+      state.badgeProgressCounts = null;
+      state.badgeProgressError = "Impossible de charger la progression des badges.";
+    } finally {
+      state.badgeProgressLoading = false;
+      state.badgeProgressLoaded = true;
       render();
     }
   }
@@ -337,6 +453,28 @@
     }
 
     state.leaderboardItems[state.rankingTab] = result.punchlines;
+    render();
+  }
+
+  async function loadUserLeaderboard(force = false) {
+    if (!api?.getLeaderboardUsers || state.userLeaderboardLoading || (state.userLeaderboardLoaded && !force)) return;
+
+    state.userLeaderboardLoading = true;
+    state.userLeaderboardError = "";
+
+    const result = await api.getLeaderboardUsers(20);
+
+    state.userLeaderboardLoading = false;
+    state.userLeaderboardLoaded = true;
+
+    if (!result.ok) {
+      state.userLeaderboardItems = [];
+      state.userLeaderboardError = result.message;
+      render();
+      return;
+    }
+
+    state.userLeaderboardItems = result.users;
     render();
   }
 
@@ -388,6 +526,12 @@
     state.profileBadgesLoaded = false;
     state.profileBadges = [];
     state.profileBadgesError = "";
+    state.activeBadgesLoaded = false;
+    state.activeBadges = [];
+    state.activeBadgesError = "";
+    state.badgeProgressLoaded = false;
+    state.badgeProgressCounts = null;
+    state.badgeProgressError = "";
     state.feedActionError = "";
     state.adminLoaded = false;
     state.adminReports = [];
@@ -408,6 +552,9 @@
     state.leaderboardError = "";
     state.topLoaded = false;
     state.topError = "";
+    state.userLeaderboardLoaded = false;
+    state.userLeaderboardItems = [];
+    state.userLeaderboardError = "";
   }
 
   function isStaffProfile(profile) {
@@ -478,6 +625,166 @@
     return name.replace(new RegExp(`\\s+${level}$`, "i"), "");
   }
 
+  function getBadgeUnlockHint(badge) {
+    return getBadgeRequirement(badge)?.hint || "Continue à faire vivre MDRank pour le débloquer.";
+  }
+
+  function getBadgeRequirement(badge) {
+    return {
+      "premier-mdr": {
+        metric: "published",
+        target: 1,
+        unit: "punchline",
+        hint: "Publie ta première punchline."
+      },
+      "machine-a-vannes-1": {
+        metric: "published",
+        target: 5,
+        unit: "punchlines",
+        hint: "Publie 5 punchlines."
+      },
+      "machine-a-vannes-2": {
+        metric: "published",
+        target: 25,
+        unit: "punchlines",
+        hint: "Publie 25 punchlines."
+      },
+      "machine-a-vannes-3": {
+        metric: "published",
+        target: 100,
+        unit: "punchlines",
+        hint: "Publie 100 punchlines."
+      },
+      "supernote-1": {
+        metric: "supernoteReceived",
+        target: 1,
+        unit: "SuperNote",
+        hint: "Reçois une SuperNote."
+      },
+      "killer-1": {
+        metric: "killerReceived",
+        target: 1,
+        unit: "réaction Killer",
+        hint: "Reçois une réaction Killer."
+      },
+      "killer-2": {
+        metric: "killerReceived",
+        target: 10,
+        unit: "réactions Killer",
+        hint: "Reçois 10 réactions Killer."
+      },
+      "killer-3": {
+        metric: "killerReceived",
+        target: 50,
+        unit: "réactions Killer",
+        hint: "Reçois 50 réactions Killer."
+      },
+      "defi-du-jour": {
+        metric: "challengePunchlines",
+        target: 1,
+        unit: "participation",
+        hint: "Participe au Défi du jour."
+      }
+    }[badge?.slug] || null;
+  }
+
+  function getBadgeProgress(badge) {
+    const requirement = getBadgeRequirement(badge);
+    if (!requirement || !state.badgeProgressCounts) return null;
+
+    const rawCurrent = Number(state.badgeProgressCounts[requirement.metric] ?? 0);
+    const current = Math.max(0, Math.min(rawCurrent, requirement.target));
+    const percent = requirement.target > 0 ? Math.round((current / requirement.target) * 100) : 0;
+
+    return {
+      current,
+      target: requirement.target,
+      unit: requirement.unit,
+      percent: Math.max(0, Math.min(percent, 100))
+    };
+  }
+
+  function getCurrentUserUnlockedBadges(result) {
+    const authState = getAuthState();
+    const userId = authState.user?.id;
+    if (!userId || !Array.isArray(result?.unlockedBadges)) return [];
+
+    return result.unlockedBadges.filter((badge) => badge.awardedUserId === userId);
+  }
+
+  function showBadgeUnlockToast(badges) {
+    const now = Date.now();
+    const visibleBadges = Array.isArray(badges)
+      ? badges.filter((badge) => {
+        if (!badge?.slug || !badge?.name) return false;
+
+        const key = `${badge.awardedUserId || "me"}:${badge.slug}:${badge.earnedAt || ""}`;
+        const lastSeen = badgeUnlockToastSeen.get(key) || 0;
+        if (now - lastSeen < 12000) return false;
+
+        badgeUnlockToastSeen.set(key, now);
+        return true;
+      })
+      : [];
+
+    badgeUnlockToastSeen.forEach((seenAt, key) => {
+      if (now - seenAt > 60000) badgeUnlockToastSeen.delete(key);
+    });
+
+    if (!visibleBadges.length) return;
+
+    if (badgeUnlockToastTimer) clearTimeout(badgeUnlockToastTimer);
+
+    const id = `${Date.now()}-${visibleBadges.map((badge) => badge.slug).join("-")}`;
+    state.badgeUnlockToast = { id, badges: visibleBadges.slice(0, 4) };
+    render();
+
+    badgeUnlockToastTimer = setTimeout(() => {
+      if (state.badgeUnlockToast?.id === id) {
+        state.badgeUnlockToast = null;
+        render();
+      }
+    }, 5200);
+  }
+
+  function handleUnlockedBadges(result) {
+    const badges = getCurrentUserUnlockedBadges(result);
+    if (!badges.length) return;
+
+    state.profileBadgesLoaded = false;
+    state.badgeProgressLoaded = false;
+    showBadgeUnlockToast(badges);
+  }
+
+  function BadgeUnlockedToast() {
+    const toast = state.badgeUnlockToast;
+    const badges = toast?.badges || [];
+    if (!badges.length) return "";
+
+    const firstBadge = badges[0];
+    const title = badges.length > 1 ? `${badges.length} badges débloqués !` : "Badge débloqué !";
+    const names = badges.map((badge) => badgeDisplayName(badge)).join(", ");
+    const remainingCount = badges.length - 1;
+    const summary = badges.length > 1
+      ? `${badgeDisplayName(firstBadge)} +${remainingCount} autre${remainingCount > 1 ? "s" : ""}`
+      : badgeDisplayName(firstBadge);
+    const description = badges.length === 1 && firstBadge.description ? firstBadge.description : names;
+
+    return `
+      <div class="badge-unlock-toast" role="status" aria-live="polite">
+        <div class="badge-unlock-icon" aria-hidden="true">
+          <span>${escapeHtml(badgeIcon(firstBadge.icon, firstBadge))}</span>
+        </div>
+        <div class="badge-unlock-copy">
+          <strong>${escapeHtml(title)}</strong>
+          <span>${escapeHtml(summary)}</span>
+          ${description ? `<p>${escapeHtml(description)}</p>` : ""}
+        </div>
+        <button type="button" data-dismiss-badge-toast aria-label="Fermer">×</button>
+      </div>
+    `;
+  }
+
   function formatBadgeDate(value) {
     if (!value) return "";
     return new Date(value).toLocaleDateString("fr-FR", {
@@ -494,23 +801,78 @@
     const variant = badgeVariant(badge, options);
     const lockedClass = options.locked ? " is-locked" : "";
     const specialClass = variant === "special" ? " badge-special" : "";
+    const progress = options.showProgress ? getBadgeProgress(badge) : null;
+    const hasProgress = progress !== null
+      && Number.isFinite(progress.current)
+      && Number.isFinite(progress.target)
+      && progress.target > 0;
+    const progressWidth = hasProgress ? Math.max(0, Math.min(progress.percent, 100)) : 0;
 
     return `
       <article class="badge-card badge-${escapeHtml(rarity)} badge-category-${escapeHtml(category)} badge-slug-${escapeHtml(slug)} badge-variant-${escapeHtml(variant)}${specialClass}${lockedClass}">
         <div class="badge-medallion" aria-hidden="true">
-          <span>${escapeHtml(options.locked ? "🔒" : badgeIcon(badge.icon, badge))}</span>
+          <span>${escapeHtml(badgeIcon(badge.icon, badge))}</span>
         </div>
         <div class="badge-content">
           <div class="badge-title-row">
             <h3>${escapeHtml(badgeDisplayName(badge))}</h3>
             ${level ? `<span class="badge-level">${escapeHtml(level)}</span>` : ""}
           </div>
+          ${options.locked ? `<p class="badge-unlock-hint">${escapeHtml(getBadgeUnlockHint(badge))}</p>` : ""}
+          ${hasProgress ? `
+            <div class="badge-progress" aria-label="${escapeHtml(`${progress.current} sur ${progress.target} ${progress.unit}`)}">
+              <div class="badge-progress-row">
+                <span>${escapeHtml(`${progress.current} / ${progress.target} ${progress.unit}`)}</span>
+              </div>
+              <div class="badge-progress-track" aria-hidden="true">
+                <span style="width: ${progressWidth}%"></span>
+              </div>
+            </div>
+          ` : ""}
         </div>
       </article>
     `;
   }
 
-  function renderProfileBadges() {
+  function sortBadgesForProfile(badges) {
+    const priority = [
+      "premier-mdr",
+      "machine-a-vannes-1",
+      "machine-a-vannes-2",
+      "machine-a-vannes-3",
+      "supernote-1",
+      "killer-1",
+      "killer-2",
+      "killer-3",
+      "defi-du-jour"
+    ];
+
+    return [...badges].sort((a, b) => {
+      const aIndex = priority.indexOf(a.slug);
+      const bIndex = priority.indexOf(b.slug);
+      const safeA = aIndex === -1 ? priority.length : aIndex;
+      const safeB = bIndex === -1 ? priority.length : bIndex;
+      return safeA - safeB || Number(a.level || 0) - Number(b.level || 0) || String(a.name).localeCompare(String(b.name));
+    });
+  }
+
+  function getLockedProfileBadges(limit = 6) {
+    const earnedSlugs = new Set(state.profileBadges.map((badge) => badge.slug).filter(Boolean));
+    return sortBadgesForProfile(state.activeBadges)
+      .filter((badge) => badge.slug && !earnedSlugs.has(badge.slug))
+      .slice(0, limit);
+  }
+
+  function getEarnedActiveBadges() {
+    if (!state.activeBadges.length) return state.profileBadges;
+
+    const earnedBySlug = new Map(state.profileBadges.map((badge) => [badge.slug, badge]));
+    return sortBadgesForProfile(state.activeBadges)
+      .map((badge) => earnedBySlug.get(badge.slug))
+      .filter(Boolean);
+  }
+
+  function renderProfileBadges(limit = 4) {
     if (state.profileBadgesLoading && !state.profileBadgesLoaded) {
       return `
         <div class="badges-empty">
@@ -538,9 +900,50 @@
       `;
     }
 
+    const badges = limit ? state.profileBadges.slice(0, limit) : getEarnedActiveBadges();
+
     return `
       <div class="badges-grid">
-        ${state.profileBadges.map((badge) => BadgePill(badge)).join("")}
+        ${badges.map((badge) => BadgePill(badge)).join("")}
+      </div>
+    `;
+  }
+
+  function renderLockedProfileBadges(limit = 2, options = {}) {
+    if (state.activeBadgesLoading && !state.activeBadgesLoaded) {
+      return `
+        <div class="badges-empty badges-empty-compact">
+          <strong>Objectifs en chargement</strong>
+          <p>On prépare les prochains badges.</p>
+        </div>
+      `;
+    }
+
+    if (state.activeBadgesError || !state.activeBadges.length) {
+      return "";
+    }
+
+    const lockedBadges = getLockedProfileBadges(limit);
+
+    if (!lockedBadges.length) {
+      return `
+        <div class="badges-complete">
+          <strong>Tous les badges V1 sont débloqués.</strong>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="profile-badge-subsection">
+        ${options.heading === false ? "" : `
+          <div class="mini-heading">
+            <h3>À débloquer</h3>
+            <p>${escapeHtml(options.description || "Quelques prochains objectifs, sans pression.")}</p>
+          </div>
+        `}
+        <div class="badges-grid badges-grid-locked">
+          ${lockedBadges.map((badge) => BadgePill(badge, { locked: true })).join("")}
+        </div>
       </div>
     `;
   }
@@ -616,6 +1019,7 @@
         <section class="screen ${isHome ? "screen-home" : ""}">${content}</section>
         ${!isHome ? BottomNavigation() : ""}
         ${state.reportPunchline ? ReportModal(state.reportPunchline) : ""}
+        ${BadgeUnlockedToast()}
       </main>
     `;
   }
@@ -643,12 +1047,15 @@
       <nav class="bottom-nav" aria-label="Navigation principale">
         ${items
           .map(
-            (item) => `
-              <button class="nav-item ${state.route === item.route ? "active" : ""} ${item.primary ? "primary-nav" : ""}" data-route="${item.route}">
+            (item) => {
+              const active = state.route === item.route || (state.route === "badges" && item.route === "profile");
+              return `
+              <button class="nav-item ${active ? "active" : ""} ${item.primary ? "primary-nav" : ""}" data-route="${item.route}">
                 <span>${item.icon}</span>
                 <small>${item.label}</small>
               </button>
-            `
+            `;
+            }
           )
           .join("")}
       </nav>
@@ -787,12 +1194,60 @@
     `;
   }
 
+  function RankingUserItem(item) {
+    const rank = Number(String(item.position || "").replace("#", "")) || 0;
+    const topClass = rank > 0 && rank <= 3 ? `top-${rank}` : "";
+
+    return `
+      <article class="ranking-item ranking-user ${topClass}">
+        <span class="rank-position">${escapeHtml(item.position)}</span>
+        <div>
+          <div class="ranking-author">
+            <strong>${escapeHtml(item.pseudo)}</strong>
+            <span class="category-badge">Blagueur</span>
+          </div>
+          <div class="ranking-metrics">
+            <span class="score-badge compact-score"><span class="score-spark">✦</span> Score ${escapeHtml(String(item.score))}</span>
+            <span class="tiny-metric">✎ ${escapeHtml(String(item.punchlines))} punchline${Number(item.punchlines) > 1 ? "s" : ""}</span>
+            <span class="star-chip">⭐ ${escapeHtml(String(item.superNotes))}</span>
+          </div>
+        </div>
+      </article>
+    `;
+  }
+
   function StatCard(stat) {
     return `
       <article class="stat-card">
         <span class="stat-icon">${escapeHtml(stat.icon || "✦")}</span>
         <strong>${escapeHtml(stat.value)}</strong>
         <span>${escapeHtml(stat.label)}</span>
+      </article>
+    `;
+  }
+
+  function BestPunchlineCard(bestPunchline, punchlineCount = 0) {
+    if (!bestPunchline?.content) {
+      const hasPunchlines = Number(punchlineCount || 0) > 0;
+      return `
+        <article class="best-punchline-card is-empty">
+          <div>
+            <span class="stat-icon">★</span>
+            <strong>Meilleure punchline</strong>
+          </div>
+          <p>${hasPunchlines ? "Meilleure punchline indisponible pour le moment." : "Aucune punchline publiée pour l'instant."}</p>
+        </article>
+      `;
+    }
+
+    return `
+      <article class="best-punchline-card">
+        <div>
+          <span class="stat-icon">★</span>
+          <strong>Meilleure punchline</strong>
+          <em><span class="score-spark">✦</span> Score ${escapeHtml(String(bestPunchline.score ?? 0))}</em>
+        </div>
+        <p>“${escapeHtml(bestPunchline.content)}”</p>
       </article>
     `;
   }
@@ -1235,8 +1690,29 @@
   }
 
   function renderRankings() {
+    if (!state.userLeaderboardLoaded && !state.userLeaderboardLoading) {
+      setTimeout(() => loadUserLeaderboard(), 0);
+    }
+
     if (!state.leaderboardLoaded[state.rankingTab] && !state.leaderboardLoading) {
       setTimeout(() => loadLeaderboard(), 0);
+    }
+
+    let usersContent = "";
+    if (state.userLeaderboardLoading && !state.userLeaderboardLoaded) {
+      usersContent = FeedSkeleton();
+    } else if (state.userLeaderboardError) {
+      usersContent = `
+        <div class="empty-state">
+          <strong>Top blagueurs en pause</strong>
+          <p>${escapeHtml(state.userLeaderboardError)}</p>
+          <button class="secondary-button full" type="button" data-refresh-ranking>Réessayer</button>
+        </div>
+      `;
+    } else if (!state.userLeaderboardItems.length) {
+      usersContent = EmptyState("Aucun blagueur classé pour l'instant.", "Le classement se remplira avec les premières punchlines.");
+    } else {
+      usersContent = `<div class="ranking-list">${state.userLeaderboardItems.map(RankingUserItem).join("")}</div>`;
     }
 
     const items = state.leaderboardItems[state.rankingTab] || [];
@@ -1259,6 +1735,22 @@
     }
 
     return AppShell(`
+      <section class="ranking-section">
+        <div class="section-heading compact-heading">
+          <div>
+            <h2>Top blagueurs</h2>
+            <p>Score total reçu sur les punchlines publiées.</p>
+          </div>
+        </div>
+        ${usersContent}
+      </section>
+      <section class="ranking-section">
+        <div class="section-heading compact-heading">
+          <div>
+            <h2>Top punchlines</h2>
+            <p>Les meilleures punchlines selon le Score MDR.</p>
+          </div>
+        </div>
       ${Tabs(
         [
           { label: "Jour", value: "day" },
@@ -1269,6 +1761,7 @@
         "ranking"
       )}
       ${content}
+      </section>
     `, { title: "Classements" });
   }
 
@@ -1295,7 +1788,12 @@
     const createdAt = authState.profile.created_at
       ? new Date(authState.profile.created_at).toLocaleDateString("fr-FR")
       : "";
-    const counts = state.profileCounts || { following: "—", followers: "—", punchlines: "—" };
+    const counts = state.profileCounts || {
+      punchlines: "—",
+      scoreMdr: "—",
+      superNotesReceived: "—",
+      bestPunchline: null
+    };
     const email = authState.user?.email || "Email indisponible pour le moment";
 
     if (!state.profileCountsLoaded && !state.profileCountsLoading) {
@@ -1325,18 +1823,27 @@
         </div>
         ${authState.profile.bio ? `<div class="profile-bio">${escapeHtml(authState.profile.bio)}</div>` : `<div class="profile-bio is-empty">Aucune bio pour l'instant.</div>`}
         <div class="stats-grid">
-          ${StatCard({ icon: "→", value: String(counts.following), label: "suivis" })}
-          ${StatCard({ icon: "←", value: String(counts.followers), label: "abonnés" })}
-          ${StatCard({ icon: "✎", value: String(counts.punchlines), label: "punchlines" })}
+          ${StatCard({ icon: "✦", value: String(counts.scoreMdr), label: "Score MDR" })}
+          ${StatCard({ icon: "✎", value: String(counts.punchlines), label: "Punchlines" })}
+          ${StatCard({ icon: "◆", value: String(counts.superNotesReceived), label: "SuperNotes reçues" })}
         </div>
+        ${BestPunchlineCard(counts.bestPunchline, counts.punchlines)}
         <div class="profile-badges">
           <div class="section-heading compact-heading">
             <div>
               <h2>Badges</h2>
-              <p>Les derniers badges obtenus sur MDRank.</p>
+              <p>Un aperçu de ta collection MDRank.</p>
             </div>
           </div>
-          ${renderProfileBadges()}
+          <div class="profile-badge-subsection">
+            <div class="mini-heading">
+              <h3>Badges obtenus</h3>
+            </div>
+          </div>
+          ${renderProfileBadges(4)}
+          <div class="profile-actions compact-actions">
+            <button data-route="badges">Voir tous les badges</button>
+          </div>
         </div>
         <div class="profile-actions">
           <button data-route="profileSetup">Modifier mon profil</button>
@@ -1366,6 +1873,128 @@
         </div>
       </section>
     `, { title: "Moi" });
+  }
+
+  function renderBadgesCollection() {
+    const authState = getAuthState();
+
+    if (authState.loading) {
+      return AppShell(`
+        <div class="empty-state">
+          <strong>Chargement</strong>
+          <p>On prépare ta collection de badges.</p>
+        </div>
+      `, { title: "Badges", action: `<button class="icon-text" data-route="profile">Profil</button>` });
+    }
+
+    if (!authState.isAuthenticated) {
+      return renderLogin();
+    }
+
+    if (!authState.profile) {
+      return renderProfileSetup();
+    }
+
+    if (!state.profileBadgesLoaded && !state.profileBadgesLoading) {
+      setTimeout(() => loadProfileBadges(), 0);
+    }
+
+    if (!state.activeBadgesLoaded && !state.activeBadgesLoading) {
+      setTimeout(() => loadActiveBadges(), 0);
+    }
+
+    if (!state.badgeProgressLoaded && !state.badgeProgressLoading) {
+      setTimeout(() => loadBadgeProgressCounts(), 0);
+    }
+
+    const earnedBadges = getEarnedActiveBadges();
+    const lockedBadges = getLockedProfileBadges(12);
+    const loading = (state.profileBadgesLoading && !state.profileBadgesLoaded)
+      || (state.activeBadgesLoading && !state.activeBadgesLoaded)
+      || (state.badgeProgressLoading && !state.badgeProgressLoaded);
+
+    let earnedContent = "";
+    if (loading) {
+      earnedContent = `
+        <div class="badges-empty">
+          <strong>Chargement des badges</strong>
+          <p>On récupère ta collection MDRank.</p>
+        </div>
+      `;
+    } else if (state.profileBadgesError) {
+      earnedContent = `
+        <div class="badges-empty">
+          <strong>Badges indisponibles</strong>
+          <p>${escapeHtml(state.profileBadgesError)}</p>
+        </div>
+      `;
+    } else if (!earnedBadges.length) {
+      earnedContent = `
+        <div class="badges-empty">
+          <strong>Aucun badge obtenu pour l'instant.</strong>
+          <p>Commence par publier ta première punchline.</p>
+        </div>
+      `;
+    } else {
+      earnedContent = `
+        <div class="badges-grid badges-grid-collection">
+          ${earnedBadges.map((badge) => BadgePill(badge)).join("")}
+        </div>
+      `;
+    }
+
+    let lockedContent = "";
+    if (!loading && state.activeBadgesError) {
+      lockedContent = `
+        <div class="badges-empty">
+          <strong>Objectifs indisponibles</strong>
+          <p>${escapeHtml(state.activeBadgesError)}</p>
+        </div>
+      `;
+    } else if (!loading && lockedBadges.length) {
+      lockedContent = `
+        ${state.badgeProgressError ? `
+          <div class="badges-progress-warning">
+            ${escapeHtml(state.badgeProgressError)}
+          </div>
+        ` : ""}
+        <div class="badges-grid badges-grid-collection badges-grid-locked">
+          ${lockedBadges.map((badge) => BadgePill(badge, { locked: true, showProgress: true })).join("")}
+        </div>
+      `;
+    } else if (!loading && state.activeBadgesLoaded && state.activeBadges.length) {
+      lockedContent = `
+        <div class="badges-complete">
+          <strong>Tous les badges V1 sont débloqués.</strong>
+        </div>
+      `;
+    }
+
+    return AppShell(`
+      <section class="profile-section badges-page">
+        <div class="section-heading">
+          <div>
+            <h2>Tous les badges</h2>
+            <p>Ta collection MDRank V1.</p>
+          </div>
+          <span>V1</span>
+        </div>
+        <div class="profile-badge-subsection">
+          <div class="mini-heading">
+            <h3>Badges obtenus</h3>
+            <p>Ceux que tu as déjà débloqués.</p>
+          </div>
+          ${earnedContent}
+        </div>
+        <div class="profile-badge-subsection">
+          <div class="mini-heading">
+            <h3>À débloquer</h3>
+            <p>Les prochains objectifs actifs.</p>
+          </div>
+          ${lockedContent}
+        </div>
+      </section>
+    `, { title: "Badges", action: `<button class="icon-text" data-route="profile">Profil</button>` });
   }
 
   function reportReasonLabel(reason) {
@@ -1512,6 +2141,16 @@
   }
 
   function bindEvents() {
+    const dismissBadgeToast = document.querySelector("[data-dismiss-badge-toast]");
+    if (dismissBadgeToast) dismissBadgeToast.addEventListener("click", () => {
+      state.badgeUnlockToast = null;
+      if (badgeUnlockToastTimer) {
+        clearTimeout(badgeUnlockToastTimer);
+        badgeUnlockToastTimer = null;
+      }
+      render();
+    });
+
     document.querySelectorAll("[data-route]").forEach((button) => {
       button.addEventListener("click", () => {
         if (button.dataset.route === "publish") resetPublishChallengeContext();
@@ -1572,7 +2211,10 @@
     if (refreshTopFeedButton) refreshTopFeedButton.addEventListener("click", () => loadFeedTopDay(true));
 
     const refreshRankingButton = document.querySelector("[data-refresh-ranking]");
-    if (refreshRankingButton) refreshRankingButton.addEventListener("click", () => loadLeaderboard(true));
+    if (refreshRankingButton) refreshRankingButton.addEventListener("click", () => {
+      loadUserLeaderboard(true);
+      loadLeaderboard(true);
+    });
 
     const refreshAdminButton = document.querySelector("[data-refresh-admin]");
     if (refreshAdminButton) refreshAdminButton.addEventListener("click", () => loadAdminReports(true));
@@ -1686,6 +2328,7 @@
           return;
         }
 
+        handleUnlockedBadges(result);
         resetLeaderboards();
         if (state.feedTab === "following") {
           await loadFollowingFeed(true);
@@ -1750,6 +2393,7 @@
           return;
         }
 
+        handleUnlockedBadges(result);
         resetLeaderboards();
         if (state.feedTab === "following") {
           await loadFollowingFeed(true);
@@ -1972,8 +2616,10 @@
       state.topItems = [];
       state.profileCountsLoaded = false;
       state.profileBadgesLoaded = false;
+      state.badgeProgressLoaded = false;
       state.challengeLoaded = false;
       resetLeaderboards();
+      handleUnlockedBadges(result);
       render();
     });
 
@@ -2089,7 +2735,9 @@
       resetUserScopedData();
       render();
     });
-    auth.init().then(() => render());
+    auth.init().then(() => {
+      render();
+    });
   }
 
   render();
