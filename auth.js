@@ -41,10 +41,29 @@
     return "";
   }
 
+  function getPendingSignupPseudo() {
+    const raw = localStorage.getItem(pendingPseudoKey);
+    if (!raw) return "";
+
+    let pending;
+    try {
+      pending = JSON.parse(raw);
+    } catch {
+      localStorage.removeItem(pendingPseudoKey);
+      return "";
+    }
+
+    const pendingEmail = String(pending?.email || "").trim().toLowerCase();
+    const userEmail = String(state.user?.email || "").trim().toLowerCase();
+    if (!pendingEmail || pendingEmail !== userEmail) return "";
+
+    return String(pending?.pseudo || "").trim();
+  }
+
   function getSignupPseudoCandidate() {
-    return localStorage.getItem(pendingPseudoKey)
-      || state.user?.user_metadata?.mdrank_pseudo
+    return state.user?.user_metadata?.mdrank_pseudo
       || state.user?.user_metadata?.pseudo
+      || getPendingSignupPseudo()
       || "";
   }
 
@@ -160,7 +179,10 @@
       return { ok: false, message: cleanMessage(error.message) };
     }
 
-    localStorage.setItem(pendingPseudoKey, pseudo.trim());
+    localStorage.setItem(pendingPseudoKey, JSON.stringify({
+      email: email.trim().toLowerCase(),
+      pseudo: pseudo.trim()
+    }));
 
     if (!data.session) {
       return {

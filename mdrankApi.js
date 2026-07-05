@@ -226,7 +226,7 @@
       hasSuperNoted: Boolean(superNoteState.hasSuperNoted),
       superNoteUsedToday: Boolean(superNoteState.superNoteUsedToday),
       score: row.score || 0,
-      position: index < 3 ? `#${index + 1} récent` : "",
+      position: "",
       selectedReaction,
       followed: Boolean(followedAuthorIds[row.author_id]),
       createdAt: row.created_at,

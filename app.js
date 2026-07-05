@@ -95,6 +95,7 @@
 
   const app = document.querySelector("#app");
   let badgeUnlockToastTimer = null;
+  let lastAuthUserId = "";
   const badgeUnlockToastSeen = new Map();
 
   const routes = {
@@ -638,7 +639,7 @@
     return state.feedItems;
   }
 
-  function resetUserScopedData() {
+  function resetUserScopedData(options = {}) {
     state.feedLoaded = false;
     state.followingLoaded = false;
     state.topLoaded = false;
@@ -666,6 +667,24 @@
     state.challengeLoaded = false;
     state.challenge = null;
     state.challengeTop = [];
+
+    if (options.clearDrafts) {
+      state.publishText = "";
+      state.publishChallengeId = "";
+      state.publishError = "";
+      state.publishSuccess = "";
+      state.publishSubmitting = false;
+      state.reportPunchline = null;
+      state.reportSent = false;
+      state.reportDetails = "";
+      state.reportError = "";
+      state.badgeUnlockToast = null;
+      badgeUnlockToastSeen.clear();
+      if (badgeUnlockToastTimer) {
+        clearTimeout(badgeUnlockToastTimer);
+        badgeUnlockToastTimer = null;
+      }
+    }
   }
 
   function resetLeaderboards() {
@@ -1214,7 +1233,7 @@
       ? "SuperNote utilisée"
       : isUsedToday
         ? "SuperNote utilisée aujourd'hui"
-        : "SuperNote +6";
+        : "+6";
     const disabledAttribute = disabled || isSelected || isUsedToday ? "disabled" : "";
 
     return `
@@ -1729,7 +1748,6 @@
 
     return AppShell(`
       <form class="publish-form">
-        <div class="publish-help">Punchline courte. Pseudo public. Email privé.</div>
         ${state.publishError ? `<div class="error-box">${escapeHtml(state.publishError)}</div>` : ""}
         ${state.publishSuccess ? `<div class="success-box">${escapeHtml(state.publishSuccess)}</div>` : ""}
         ${state.publishCategoriesLoaded && !normalCategories.length && !isChallengePublish ? `
@@ -1954,7 +1972,6 @@
         <div class="section-heading">
           <div>
             <h2>Profil public</h2>
-            <p>Ce que les autres voient sur MDRank.</p>
           </div>
           <span>Public</span>
         </div>
@@ -1962,7 +1979,6 @@
           ${MdrankAvatar(authState.user?.id, "large")}
           <div>
             <h3>${escapeHtml(authState.profile.pseudo)}</h3>
-            <p>Pseudo public, vraie identité au vestiaire.</p>
           </div>
         </div>
         ${authState.profile.bio ? `<div class="profile-bio">${escapeHtml(authState.profile.bio)}</div>` : `<div class="profile-bio is-empty">Aucune bio pour l'instant.</div>`}
@@ -3022,8 +3038,11 @@
   });
 
   if (auth) {
-    auth.subscribe(() => {
-      resetUserScopedData();
+    auth.subscribe((authState) => {
+      const nextAuthUserId = authState.user?.id || "";
+      const userChanged = nextAuthUserId !== lastAuthUserId;
+      lastAuthUserId = nextAuthUserId;
+      resetUserScopedData({ clearDrafts: userChanged });
       render();
     });
     auth.init().then(() => {
