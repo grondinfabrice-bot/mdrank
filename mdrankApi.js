@@ -530,7 +530,7 @@
       console.warn("MDRank: get_my_badge_progress_counts", error);
       return {
         ok: false,
-        message: `Impossible de charger la progression des badges. ${error.message || ""}`.trim(),
+        message: "Impossible de charger la progression des badges.",
         counts: null,
         error
       };

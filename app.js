@@ -28,6 +28,7 @@
     profileCounts: null,
     profileCountsLoading: false,
     profileCountsLoaded: false,
+    profileCountsError: "",
     profileBadges: [],
     profileBadgesLoading: false,
     profileBadgesLoaded: false,
@@ -82,6 +83,7 @@
     publishError: "",
     publishSuccess: "",
     published: false,
+    authSubmitting: false,
     authMessage: "",
     authError: "",
     challenge: null,
@@ -102,12 +104,75 @@
     challenges: renderChallenges,
     rankings: renderRankings,
     profile: renderProfile,
+    account: renderAccount,
     badges: renderBadgesCollection,
     login: renderLogin,
     signup: renderSignup,
     profileSetup: renderProfileSetup,
     admin: renderAdmin
   };
+
+  const avatarVariants = [
+    { bg: "#6654f1", fg: "#fffdf9", accent: "#ff7a59" },
+    { bg: "#ff7a59", fg: "#15131d", accent: "#ffc83d" },
+    { bg: "#ffc83d", fg: "#4c3bd2", accent: "#fffdf9" },
+    { bg: "#4c3bd2", fg: "#fffdf9", accent: "#ff5f8f" },
+    { bg: "#ff5f8f", fg: "#fffdf9", accent: "#15131d" },
+    { bg: "#e8ddff", fg: "#4c3bd2", accent: "#ff7a59" },
+    { bg: "#15131d", fg: "#ffc83d", accent: "#ff5f8f" },
+    { bg: "#79bce8", fg: "#15131d", accent: "#fffdf9" }
+  ];
+
+  function hashAvatarSeed(seed) {
+    const value = String(seed || "mdrank-avatar-fallback");
+    let hash = 2166136261;
+
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+
+    return hash >>> 0;
+  }
+
+  function avatarSymbol(symbolIndex, fg, accent) {
+    const symbols = [
+      `<path d="M47 13 24 41h17l-5 30 24-35H43l4-23Z" fill="${fg}"/>`,
+      `<path d="m42 12 7 19 20 2-15 13 5 20-17-11-17 11 5-20-15-13 20-2 7-19Z" fill="${fg}"/>`,
+      `<path d="M42 12c3 16 11 24 27 27-16 3-24 11-27 27-3-16-11-24-27-27 16-3 24-11 27-27Z" fill="${fg}"/><circle cx="62" cy="19" r="5" fill="${accent}"/>`,
+      `<path d="m42 13 29 29-29 29-29-29 29-29Z" fill="${fg}"/><path d="m42 28 14 14-14 14-14-14 14-14Z" fill="${accent}"/>`,
+      `<circle cx="42" cy="42" r="17" fill="${fg}"/><path d="M42 10v14M42 60v14M10 42h14M60 42h14M19 19l10 10M55 55l10 10M65 19 55 29M29 55 19 65" stroke="${accent}" stroke-width="7" stroke-linecap="round"/>`,
+      `<path d="M30 15h24v15h15v24H54v15H30V54H15V30h15V15Z" fill="${fg}"/>`,
+      `<path d="M20 31c8-17 36-17 44 0 5 11-2 27-22 39-20-12-27-28-22-39Z" fill="${fg}"/><circle cx="31" cy="38" r="4" fill="${accent}"/><circle cx="53" cy="38" r="4" fill="${accent}"/>`,
+      `<path d="M16 50c10-23 42-29 53-7-8-3-15-2-22 3-10 7-20 8-31 4Z" fill="${fg}"/><path d="M25 29c12-13 31-13 43 1-15-4-29-4-43-1Z" fill="${accent}"/>`
+    ];
+
+    return symbols[symbolIndex % symbols.length];
+  }
+
+  function MdrankAvatar(seed, size = "medium", label = "") {
+    const hash = hashAvatarSeed(seed);
+    const variant = avatarVariants[hash % avatarVariants.length];
+    const symbolIndex = Math.floor(hash / avatarVariants.length) % 8;
+    const rotate = [-10, -5, 0, 6, 10][Math.floor(hash / 17) % 5];
+    const dotX = 20 + (hash % 44);
+    const dotY = 18 + (Math.floor(hash / 97) % 48);
+    const safeLabel = label ? ` role="img" aria-label="${escapeHtml(label)}"` : ` aria-hidden="true"`;
+
+    return `
+      <span class="mdrank-avatar mdrank-avatar-${size}"${safeLabel}>
+        <svg viewBox="0 0 84 84" focusable="false">
+          <circle cx="42" cy="42" r="42" fill="${variant.bg}"/>
+          <path d="M13 24c18-18 44-20 59-4" fill="none" stroke="#fffdf9" stroke-opacity=".28" stroke-width="10" stroke-linecap="round"/>
+          <g transform="rotate(${rotate} 42 42)">
+            ${avatarSymbol(symbolIndex, variant.fg, variant.accent)}
+          </g>
+          <circle cx="${dotX}" cy="${dotY}" r="5" fill="${variant.accent}"/>
+          <circle cx="42" cy="42" r="39" fill="none" stroke="#fffdf9" stroke-opacity=".5" stroke-width="3"/>
+        </svg>
+      </span>
+    `;
+  }
 
   state.route = routeFromHash();
 
@@ -127,6 +192,7 @@
     if (!options.keepAuthMessage) state.authMessage = "";
     if (!options.keepAuthError) state.authError = "";
     state.feedActionError = "";
+    state.authSubmitting = false;
     window.location.hash = route === "home" ? "" : route;
     render();
   }
@@ -143,7 +209,7 @@
 
   function resolveRoute(route) {
     const authState = getAuthState();
-    const protectedRoutes = ["publish", "profile", "profileSetup", "badges"];
+    const protectedRoutes = ["publish", "profile", "account", "profileSetup", "badges"];
 
     if (protectedRoutes.includes(route) && authState.loading) {
       return route;
@@ -166,7 +232,13 @@
     state.publishCategoriesLoading = true;
     state.publishError = "";
 
-    const result = await api.loadActiveCategories();
+    let result;
+    try {
+      result = await api.loadActiveCategories();
+    } catch (error) {
+      console.warn("MDRank: load categories", error);
+      result = { ok: false, message: "Impossible de charger les catégories.", categories: [] };
+    }
 
     state.publishCategoriesLoading = false;
     state.publishCategoriesLoaded = true;
@@ -189,7 +261,13 @@
     state.challengeLoading = true;
     state.challengeError = "";
 
-    const result = await api.getDailyChallenge();
+    let result;
+    try {
+      result = await api.getDailyChallenge();
+    } catch (error) {
+      console.warn("MDRank: load daily challenge", error);
+      result = { ok: false, message: "Impossible de charger le défi du jour.", challenge: null, top: [] };
+    }
 
     state.challengeLoading = false;
     state.challengeLoaded = true;
@@ -213,7 +291,13 @@
     state.feedLoading = true;
     state.feedError = "";
 
-    const result = await api.getRecentPunchlines(20);
+    let result;
+    try {
+      result = await api.getRecentPunchlines(20);
+    } catch (error) {
+      console.warn("MDRank: load feed", error);
+      result = { ok: false, message: "Impossible de charger le feed pour le moment.", punchlines: [] };
+    }
 
     state.feedLoading = false;
     state.feedLoaded = true;
@@ -238,7 +322,13 @@
     state.followingLoading = true;
     state.followingError = "";
 
-    const result = await api.getFollowingPunchlines(20);
+    let result;
+    try {
+      result = await api.getFollowingPunchlines(20);
+    } catch (error) {
+      console.warn("MDRank: load following feed", error);
+      result = { ok: false, message: "Impossible de charger le feed suivis pour le moment.", punchlines: [] };
+    }
 
     state.followingLoading = false;
     state.followingLoaded = true;
@@ -260,7 +350,13 @@
     state.topLoading = true;
     state.topError = "";
 
-    const result = await api.getLeaderboard("day", 20);
+    let result;
+    try {
+      result = await api.getLeaderboard("day", 20);
+    } catch (error) {
+      console.warn("MDRank: load top feed", error);
+      result = { ok: false, message: "Impossible de charger le classement pour le moment.", punchlines: [] };
+    }
 
     state.topLoading = false;
     state.topLoaded = true;
@@ -283,12 +379,20 @@
     if (!authState.isAuthenticated || !authState.profile) return;
 
     state.profileCountsLoading = true;
+    state.profileCountsError = "";
 
-    const result = await api.getProfileCounts();
+    let result;
+    try {
+      result = await api.getProfileCounts();
+    } catch (error) {
+      console.warn("MDRank: load profile counts", error);
+      result = { ok: false, message: "Impossible de charger les stats du profil.", counts: null };
+    }
 
     state.profileCountsLoading = false;
     state.profileCountsLoaded = true;
     state.profileCounts = result.ok ? result.counts : null;
+    state.profileCountsError = result.ok ? "" : result.message || "Impossible de charger les stats du profil.";
     render();
   }
 
@@ -440,7 +544,13 @@
     state.leaderboardLoading = true;
     state.leaderboardError = "";
 
-    const result = await api.getLeaderboard(state.rankingTab, 50);
+    let result;
+    try {
+      result = await api.getLeaderboard(state.rankingTab, 50);
+    } catch (error) {
+      console.warn("MDRank: load leaderboard", error);
+      result = { ok: false, message: "Impossible de charger le classement pour le moment.", punchlines: [] };
+    }
 
     state.leaderboardLoading = false;
     state.leaderboardLoaded[state.rankingTab] = true;
@@ -462,7 +572,13 @@
     state.userLeaderboardLoading = true;
     state.userLeaderboardError = "";
 
-    const result = await api.getLeaderboardUsers(20);
+    let result;
+    try {
+      result = await api.getLeaderboardUsers(20);
+    } catch (error) {
+      console.warn("MDRank: load user leaderboard", error);
+      result = { ok: false, message: "Impossible de charger le Top blagueurs pour le moment.", users: [] };
+    }
 
     state.userLeaderboardLoading = false;
     state.userLeaderboardLoaded = true;
@@ -487,10 +603,18 @@
     state.adminLoading = true;
     state.adminError = "";
 
-    const [pendingResult, moderatedResult] = await Promise.all([
-      api.getPendingReports(),
-      api.getModeratedPunchlines()
-    ]);
+    let pendingResult;
+    let moderatedResult;
+    try {
+      [pendingResult, moderatedResult] = await Promise.all([
+        api.getPendingReports(),
+        api.getModeratedPunchlines()
+      ]);
+    } catch (error) {
+      console.warn("MDRank: load admin reports", error);
+      pendingResult = { ok: false, message: "Impossible de charger la modération.", reports: [] };
+      moderatedResult = { ok: false, message: "Impossible de charger la modération.", reports: [] };
+    }
 
     state.adminLoading = false;
     state.adminLoaded = true;
@@ -523,6 +647,7 @@
     state.topItems = [];
     state.profileCountsLoaded = false;
     state.profileCounts = null;
+    state.profileCountsError = "";
     state.profileBadgesLoaded = false;
     state.profileBadges = [];
     state.profileBadgesError = "";
@@ -748,7 +873,14 @@
   }
 
   function handleUnlockedBadges(result) {
-    const badges = getCurrentUserUnlockedBadges(result);
+    let badges = [];
+    try {
+      badges = getCurrentUserUnlockedBadges(result);
+    } catch (error) {
+      console.warn("MDRank: badge feedback skipped", error);
+      return;
+    }
+
     if (!badges.length) return;
 
     state.profileBadgesLoaded = false;
@@ -1048,7 +1180,7 @@
         ${items
           .map(
             (item) => {
-              const active = state.route === item.route || (state.route === "badges" && item.route === "profile");
+              const active = state.route === item.route || (["account", "badges"].includes(state.route) && item.route === "profile");
               return `
               <button class="nav-item ${active ? "active" : ""} ${item.primary ? "primary-nav" : ""}" data-route="${item.route}">
                 <span>${item.icon}</span>
@@ -1125,7 +1257,8 @@
     return `
       <article class="punch-card" data-punchline-card="${punchline.id}">
         <div class="card-meta">
-          <div>
+          <div class="author-line">
+            ${MdrankAvatar(punchline.authorId, "small")}
             <strong>${escapeHtml(punchline.pseudo)}</strong>
             ${CategoryBadge(punchline.category)}
           </div>
@@ -1176,8 +1309,11 @@
         <span class="rank-position">${escapeHtml(item.position)}</span>
         <div>
           <div class="ranking-author">
-            <strong>${escapeHtml(item.pseudo)}</strong>
-            ${CategoryBadge(item.category)}
+            ${MdrankAvatar(item.authorId, "small")}
+            <div class="ranking-author-copy">
+              <strong>${escapeHtml(item.pseudo)}</strong>
+              ${CategoryBadge(item.category)}
+            </div>
           </div>
           <p>“${escapeHtml(item.text)}”</p>
           <div class="ranking-metrics">
@@ -1203,8 +1339,11 @@
         <span class="rank-position">${escapeHtml(item.position)}</span>
         <div>
           <div class="ranking-author">
-            <strong>${escapeHtml(item.pseudo)}</strong>
-            <span class="category-badge">Blagueur</span>
+            ${MdrankAvatar(item.id, "small")}
+            <div class="ranking-author-copy">
+              <strong>${escapeHtml(item.pseudo)}</strong>
+              <span class="category-badge">Blagueur</span>
+            </div>
           </div>
           <div class="ranking-metrics">
             <span class="score-badge compact-score"><span class="score-spark">✦</span> Score ${escapeHtml(String(item.score))}</span>
@@ -1367,7 +1506,7 @@
             Mot de passe
             <input id="login-password" type="password" autocomplete="current-password" required />
           </label>
-          <button class="primary-button full" type="submit">Se connecter</button>
+          <button class="primary-button full" type="submit" ${state.authSubmitting ? "disabled" : ""}>${state.authSubmitting ? "Connexion..." : "Se connecter"}</button>
         </form>
         <div class="auth-links">
           <button type="button" data-route="signup">Créer un compte</button>
@@ -1400,7 +1539,7 @@
             Pseudo
             <input id="signup-pseudo" type="text" minlength="3" maxlength="24" autocomplete="nickname" required />
           </label>
-          <button class="primary-button full" type="submit">Créer mon compte</button>
+          <button class="primary-button full" type="submit" ${state.authSubmitting ? "disabled" : ""}>${state.authSubmitting ? "Création..." : "Créer mon compte"}</button>
         </form>
         <div class="auth-links">
           <button type="button" data-route="login">J'ai déjà un compte</button>
@@ -1428,7 +1567,7 @@
             Bio optionnelle
             <textarea id="profile-bio" maxlength="160" placeholder="Une courte bio, sans vrai nom.">${escapeHtml(authState.profile?.bio || "")}</textarea>
           </label>
-          <button class="primary-button full" type="submit">${hasProfile ? "Enregistrer mon profil" : "Créer mon profil"}</button>
+          <button class="primary-button full" type="submit" ${state.authSubmitting ? "disabled" : ""}>${state.authSubmitting ? "Enregistrement..." : hasProfile ? "Enregistrer mon profil" : "Créer mon profil"}</button>
         </form>
       </section>
     `, { title: "Pseudo" });
@@ -1578,6 +1717,7 @@
       && (!isChallengePublish || Boolean(activeChallenge));
     const preview = {
       pseudo: authState.profile.pseudo,
+      authorId: authState.user?.id,
       category: isChallengePublish ? "Défi du jour" : effectiveCategory?.name || "Catégorie",
       text: state.publishText || "Ta punchline apparaîtra ici pendant que tu l'écris.",
       reactions: { laugh: 0, fire: 0, skull: 0, mind: 0, ice: 0 },
@@ -1592,6 +1732,11 @@
         <div class="publish-help">Punchline courte. Pseudo public. Email privé.</div>
         ${state.publishError ? `<div class="error-box">${escapeHtml(state.publishError)}</div>` : ""}
         ${state.publishSuccess ? `<div class="success-box">${escapeHtml(state.publishSuccess)}</div>` : ""}
+        ${state.publishCategoriesLoaded && !normalCategories.length && !isChallengePublish ? `
+          <button class="secondary-button full" type="button" data-refresh-publish-categories>
+            Réessayer de charger les catégories
+          </button>
+        ` : ""}
         ${
           isChallengePublish
             ? `
@@ -1663,8 +1808,11 @@
           ${state.challengeTop.map((item) => `
             <article class="challenge-rank">
               <strong>${item.position}</strong>
-              <div>
-                <span>${escapeHtml(item.pseudo)}</span>
+              <div class="challenge-rank-body">
+                <div class="challenge-author">
+                  ${MdrankAvatar(item.authorId, "small")}
+                  <span>${escapeHtml(item.pseudo)}</span>
+                </div>
                 <p>“${escapeHtml(item.text)}”</p>
               </div>
               <em><span class="score-spark">✦</span> Score ${item.score}</em>
@@ -1785,16 +1933,12 @@
       return renderProfileSetup();
     }
 
-    const createdAt = authState.profile.created_at
-      ? new Date(authState.profile.created_at).toLocaleDateString("fr-FR")
-      : "";
     const counts = state.profileCounts || {
       punchlines: "—",
       scoreMdr: "—",
       superNotesReceived: "—",
       bestPunchline: null
     };
-    const email = authState.user?.email || "Email indisponible pour le moment";
 
     if (!state.profileCountsLoaded && !state.profileCountsLoading) {
       setTimeout(() => loadProfileCounts(), 0);
@@ -1815,7 +1959,7 @@
           <span>Public</span>
         </div>
         <div class="profile-header compact-profile">
-          <div class="avatar">${escapeHtml(authState.profile.pseudo.slice(0, 2).toUpperCase())}</div>
+          ${MdrankAvatar(authState.user?.id, "large")}
           <div>
             <h3>${escapeHtml(authState.profile.pseudo)}</h3>
             <p>Pseudo public, vraie identité au vestiaire.</p>
@@ -1827,6 +1971,7 @@
           ${StatCard({ icon: "✎", value: String(counts.punchlines), label: "Punchlines" })}
           ${StatCard({ icon: "◆", value: String(counts.superNotesReceived), label: "SuperNotes reçues" })}
         </div>
+        ${state.profileCountsError ? `<div class="error-box">${escapeHtml(state.profileCountsError)}</div>` : ""}
         ${BestPunchlineCard(counts.bestPunchline, counts.punchlines)}
         <div class="profile-badges">
           <div class="section-heading compact-heading">
@@ -1847,8 +1992,38 @@
         </div>
         <div class="profile-actions">
           <button data-route="profileSetup">Modifier mon profil</button>
+          <button data-route="account">Compte privé</button>
         </div>
       </section>
+    `, { title: "Profil", action: `<button class="icon-text" data-route="account">Compte</button>` });
+  }
+
+  function renderAccount() {
+    const authState = getAuthState();
+
+    if (authState.loading) {
+      return AppShell(`
+        <div class="empty-state">
+          <strong>Chargement</strong>
+          <p>On vérifie ta session MDRank.</p>
+        </div>
+      `, { title: "Compte" });
+    }
+
+    if (!authState.isAuthenticated) {
+      return renderLogin();
+    }
+
+    if (!authState.profile) {
+      return renderProfileSetup();
+    }
+
+    const createdAt = authState.profile.created_at
+      ? new Date(authState.profile.created_at).toLocaleDateString("fr-FR")
+      : "";
+    const email = authState.user?.email || "Email indisponible pour le moment";
+
+    return AppShell(`
       <section class="profile-section private-section">
         <div class="section-heading">
           <div>
@@ -1857,7 +2032,18 @@
           </div>
           <span>Privé</span>
         </div>
+        <div class="profile-header compact-profile account-avatar-row">
+          ${MdrankAvatar(authState.user?.id, "medium")}
+          <div>
+            <h3>${escapeHtml(authState.profile.pseudo)}</h3>
+            <p>Identité publique MDRank</p>
+          </div>
+        </div>
         <div class="account-list">
+          <div>
+            <span>Pseudo public</span>
+            <strong>${escapeHtml(authState.profile.pseudo)}</strong>
+          </div>
           <div>
             <span>Email de connexion</span>
             <strong>${escapeHtml(email)}</strong>
@@ -1869,10 +2055,12 @@
           ${createdAt ? `<div><span>Profil créé le</span><strong>${createdAt}</strong></div>` : ""}
         </div>
         <div class="profile-actions">
+          <button data-route="profile">Voir mon profil</button>
+          <button data-route="profileSetup">Modifier mon pseudo</button>
           <button class="logout" data-sign-out>Déconnexion</button>
         </div>
       </section>
-    `, { title: "Moi" });
+    `, { title: "Compte", action: `<button class="icon-text" data-route="profile">Profil</button>` });
   }
 
   function renderBadgesCollection() {
@@ -1909,12 +2097,13 @@
 
     const earnedBadges = getEarnedActiveBadges();
     const lockedBadges = getLockedProfileBadges(12);
-    const loading = (state.profileBadgesLoading && !state.profileBadgesLoaded)
-      || (state.activeBadgesLoading && !state.activeBadgesLoaded)
-      || (state.badgeProgressLoading && !state.badgeProgressLoaded);
+    const earnedLoading = (state.profileBadgesLoading && !state.profileBadgesLoaded)
+      || (state.activeBadgesLoading && !state.activeBadgesLoaded);
+    const lockedLoading = state.activeBadgesLoading && !state.activeBadgesLoaded;
+    const progressLoading = state.badgeProgressLoading && !state.badgeProgressLoaded;
 
     let earnedContent = "";
-    if (loading) {
+    if (earnedLoading) {
       earnedContent = `
         <div class="badges-empty">
           <strong>Chargement des badges</strong>
@@ -1944,25 +2133,36 @@
     }
 
     let lockedContent = "";
-    if (!loading && state.activeBadgesError) {
+    if (lockedLoading) {
+      lockedContent = `
+        <div class="badges-empty">
+          <strong>Objectifs en chargement</strong>
+          <p>On récupère les prochains badges à débloquer.</p>
+        </div>
+      `;
+    } else if (state.activeBadgesError) {
       lockedContent = `
         <div class="badges-empty">
           <strong>Objectifs indisponibles</strong>
           <p>${escapeHtml(state.activeBadgesError)}</p>
         </div>
       `;
-    } else if (!loading && lockedBadges.length) {
+    } else if (lockedBadges.length) {
       lockedContent = `
-        ${state.badgeProgressError ? `
+        ${progressLoading ? `
+          <div class="badges-progress-warning">
+            Progression en chargement. Les objectifs restent visibles sans compteur temporaire.
+          </div>
+        ` : state.badgeProgressError ? `
           <div class="badges-progress-warning">
             ${escapeHtml(state.badgeProgressError)}
           </div>
         ` : ""}
         <div class="badges-grid badges-grid-collection badges-grid-locked">
-          ${lockedBadges.map((badge) => BadgePill(badge, { locked: true, showProgress: true })).join("")}
+          ${lockedBadges.map((badge) => BadgePill(badge, { locked: true, showProgress: state.badgeProgressLoaded && !state.badgeProgressError })).join("")}
         </div>
       `;
-    } else if (!loading && state.activeBadgesLoaded && state.activeBadges.length) {
+    } else if (state.activeBadgesLoaded && state.activeBadges.length) {
       lockedContent = `
         <div class="badges-complete">
           <strong>Tous les badges V1 sont débloqués.</strong>
@@ -2222,6 +2422,13 @@
     const refreshChallengeButton = document.querySelector("[data-refresh-challenge]");
     if (refreshChallengeButton) refreshChallengeButton.addEventListener("click", () => loadDailyChallenge(true));
 
+    const refreshPublishCategoriesButton = document.querySelector("[data-refresh-publish-categories]");
+    if (refreshPublishCategoriesButton) refreshPublishCategoriesButton.addEventListener("click", () => {
+      state.publishCategoriesLoaded = false;
+      state.publishError = "";
+      loadPublishCategories();
+    });
+
     document.querySelectorAll("[data-join-challenge]").forEach((button) => {
       button.addEventListener("click", () => {
         state.publishChallengeId = button.dataset.joinChallenge;
@@ -2259,9 +2466,15 @@
         state.feedActionError = "";
         render();
 
-        const result = punchline?.followed
-          ? await api.unfollowUser({ targetUserId })
-          : await api.followUser({ targetUserId });
+        let result;
+        try {
+          result = punchline?.followed
+            ? await api.unfollowUser({ targetUserId })
+            : await api.followUser({ targetUserId });
+        } catch (error) {
+          console.warn("MDRank: follow action", error);
+          result = { ok: false, message: "Action impossible pour le moment." };
+        }
 
         state.followSubmittingKey = "";
 
@@ -2315,10 +2528,16 @@
         state.feedActionError = "";
         render();
 
-        const result = await api.castReaction({
-          punchlineId,
-          reactionType
-        });
+        let result;
+        try {
+          result = await api.castReaction({
+            punchlineId,
+            reactionType
+          });
+        } catch (error) {
+          console.warn("MDRank: cast reaction", error);
+          result = { ok: false, message: "Réaction impossible pour le moment." };
+        }
 
         state.reactionSubmittingKey = "";
 
@@ -2383,7 +2602,13 @@
         state.feedActionError = "";
         render();
 
-        const result = await api.giveSuperNote({ punchlineId });
+        let result;
+        try {
+          result = await api.giveSuperNote({ punchlineId });
+        } catch (error) {
+          console.warn("MDRank: give supernote", error);
+          result = { ok: false, message: "Impossible d'envoyer la SuperNote pour le moment." };
+        }
 
         state.superNoteSubmittingKey = "";
 
@@ -2453,11 +2678,17 @@
       state.reportError = "";
       render();
 
-      const result = await api.reportPunchline({
-        punchlineId: state.reportPunchline?.id,
-        reason: state.reportReason,
-        details: state.reportDetails.trim()
-      });
+      let result;
+      try {
+        result = await api.reportPunchline({
+          punchlineId: state.reportPunchline?.id,
+          reason: state.reportReason,
+          details: state.reportDetails.trim()
+        });
+      } catch (error) {
+        console.warn("MDRank: report punchline", error);
+        result = { ok: false, message: "Impossible d'envoyer le signalement pour le moment." };
+      }
 
       state.reportSubmitting = false;
 
@@ -2484,11 +2715,17 @@
         state.adminMessage = "";
         render();
 
-        const result = await api.moderatePunchline({
-          punchlineId,
-          action,
-          reason: "Modération MDRank"
-        });
+        let result;
+        try {
+          result = await api.moderatePunchline({
+            punchlineId,
+            action,
+            reason: "Modération MDRank"
+          });
+        } catch (error) {
+          console.warn("MDRank: moderate punchline", error);
+          result = { ok: false, message: "Action impossible pour le moment." };
+        }
 
         state.adminActionKey = "";
 
@@ -2526,11 +2763,17 @@
         state.adminMessage = "";
         render();
 
-        const result = await api.moderateUser({
-          targetUserId,
-          action,
-          reason: "Modération MDRank"
-        });
+        let result;
+        try {
+          result = await api.moderateUser({
+            targetUserId,
+            action,
+            reason: "Modération MDRank"
+          });
+        } catch (error) {
+          console.warn("MDRank: moderate user", error);
+          result = { ok: false, message: "Action impossible pour le moment." };
+        }
 
         state.adminActionKey = "";
 
@@ -2590,11 +2833,17 @@
       render();
 
       const category = state.publishChallengeId ? getChallengeCategory() : getSelectedPublishCategory();
-      const result = await api.createPunchline({
-        content: state.publishText.trim(),
-        categoryId: category?.id || state.publishCategoryId,
-        challengeId: state.publishChallengeId || null
-      });
+      let result;
+      try {
+        result = await api.createPunchline({
+          content: state.publishText.trim(),
+          categoryId: category?.id || state.publishCategoryId,
+          challengeId: state.publishChallengeId || null
+        });
+      } catch (error) {
+        console.warn("MDRank: create punchline", error);
+        result = { ok: false, message: "La publication n'est pas passée. Réessaie." };
+      }
 
       state.publishSubmitting = false;
 
@@ -2626,12 +2875,26 @@
     const loginForm = document.querySelector("#login-form");
     if (loginForm) loginForm.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (state.authSubmitting) return;
       state.authError = "";
       state.authMessage = "";
-      const result = await auth.signIn({
-        email: document.querySelector("#login-email").value,
-        password: document.querySelector("#login-password").value
-      });
+      const email = document.querySelector("#login-email").value;
+      const password = document.querySelector("#login-password").value;
+      state.authSubmitting = true;
+      render();
+
+      let result;
+      try {
+        result = await auth.signIn({
+          email,
+          password
+        });
+      } catch (error) {
+        console.warn("MDRank: sign in", error);
+        result = { ok: false, message: "Connexion impossible pour le moment." };
+      }
+
+      state.authSubmitting = false;
 
       if (!result.ok) {
         state.authError = result.message;
@@ -2646,11 +2909,14 @@
     const signupForm = document.querySelector("#signup-form");
     if (signupForm) signupForm.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (state.authSubmitting) return;
       state.authError = "";
       state.authMessage = "";
 
       const password = document.querySelector("#signup-password").value;
       const passwordConfirm = document.querySelector("#signup-password-confirm").value;
+      const email = document.querySelector("#signup-email").value;
+      const pseudo = document.querySelector("#signup-pseudo").value;
 
       if (password !== passwordConfirm) {
         state.authError = "Les mots de passe ne correspondent pas.";
@@ -2658,11 +2924,22 @@
         return;
       }
 
-      const result = await auth.signUp({
-        email: document.querySelector("#signup-email").value,
-        password,
-        pseudo: document.querySelector("#signup-pseudo").value
-      });
+      state.authSubmitting = true;
+      render();
+
+      let result;
+      try {
+        result = await auth.signUp({
+          email,
+          password,
+          pseudo
+        });
+      } catch (error) {
+        console.warn("MDRank: sign up", error);
+        result = { ok: false, message: "Création du compte impossible pour le moment." };
+      }
+
+      state.authSubmitting = false;
 
       if (!result.ok) {
         state.authError = result.message;
@@ -2682,13 +2959,27 @@
     const profileForm = document.querySelector("#profile-form");
     if (profileForm) profileForm.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (state.authSubmitting) return;
       state.authError = "";
       state.authMessage = "";
+      const pseudo = document.querySelector("#profile-pseudo").value;
+      const bio = document.querySelector("#profile-bio").value;
 
-      const result = await auth.createOrUpdateProfile(
-        document.querySelector("#profile-pseudo").value,
-        document.querySelector("#profile-bio").value
-      );
+      state.authSubmitting = true;
+      render();
+
+      let result;
+      try {
+        result = await auth.createOrUpdateProfile(
+          pseudo,
+          bio
+        );
+      } catch (error) {
+        console.warn("MDRank: save profile", error);
+        result = { ok: false, message: "Impossible d'enregistrer le profil pour le moment." };
+      }
+
+      state.authSubmitting = false;
 
       if (!result.ok) {
         state.authError = result.message;

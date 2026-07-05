@@ -4,7 +4,7 @@ set local role postgres;
 
 create extension if not exists pgtap;
 
-select plan(120);
+select plan(123);
 
 create or replace function pg_temp.set_test_user(user_id uuid)
 returns void
@@ -1354,6 +1354,35 @@ select pg_temp.assert_true(
       and column_name in ('email', 'user_id', 'reporter_id', 'reviewed_by')
   ),
   'public feed views do not expose private identity columns'
+);
+
+select pg_temp.assert_true(
+  (
+    select count(*) = 1
+    from public.profiles
+    where id = '00000000-0000-0000-0000-000000000102'
+  ),
+  'authenticated user can only read own private profile row through RLS'
+);
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from public.profiles
+    where id <> '00000000-0000-0000-0000-000000000102'
+  ),
+  'authenticated user cannot read other private profile rows through RLS'
+);
+
+select pg_temp.assert_true(
+  not exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name in ('public_profiles', 'leaderboard_users')
+      and column_name = 'email'
+  ),
+  'public profile and user leaderboard views do not expose email'
 );
 
 set local role postgres;
